@@ -80,7 +80,7 @@ Division by a linear-feedback shift register gives the same result:
 
 The level is the 2-bit field of the format word (chapter 2). It sets the target share of parity bytes among all codewords.
 
-| Level | Name | Target parity share | Parity numerator q_L (share = q_L / 100) | Correctable byte errors | Correctable byte erasures | Minimum N (4.6) |
+| Level lvl | Name | Target parity share | Parity numerator q[lvl] (share = q[lvl] / 100) | Correctable byte errors | Correctable byte erasures | Minimum N (4.6) |
 |---|---|---|---|---|---|---|
 | 0 | L | at least 15% | 15 | about 7.5% of the codewords | about 15% | 3 |
 | 1 | M | at least 30% | 30 | about 15% | about 30% | 3 |
@@ -89,14 +89,14 @@ The level is the 2-bit field of the format word (chapter 2). It sets the target 
 
 A block with P parity bytes corrects up to P/2 byte errors, or up to P byte erasures (4.9). The level is defined by its parity share; the recoverable share is half of it for errors. The four levels match the nominal recovery capacity of QR Code's levels L, M, Q and H (about 7, 15, 25 and 30%), so a comparison with QR Code at "the same level" compares equal correcting power.
 
-Every block of a symbol meets the target share: P · 100 ≥ n · q_L for every block length n.
+Every block of a symbol meets the target share: P · 100 ≥ n · q[lvl] for every block length n.
 
 ## 4.6 Block splitting
 
 The input is:
 
 - N, the number of codewords in the data area. Chapter 5 gives the number of data modules D for the symbol; N = floor(D / 8).
-- L, the error-correction level (0 to 3).
+- lvl, the error-correction level (0 to 3): the format word's level for the base layer (chapter 2), `chroma_ecc_level` for the colour layer (chapter 7, 7.8.2).
 
 The output is:
 
@@ -110,32 +110,41 @@ All arithmetic is on non-negative integers. `ceil_div(a, d)` is floor((a + d −
 
     q = [15, 30, 50, 60]
 
-    function split(N, L):
-        require 0 <= L <= 3 and N >= N_min[L]     # N_min = [3, 3, 3, 5]
+    function split(N, lvl):
+        require 0 <= lvl <= 3 and N >= N_min[lvl]   # N_min = [3, 3, 3, 5]
         B     = ceil_div(N, 255)             # fewest blocks with n <= 255
         s     = floor(N / B)                 # short block length
         r     = N mod B                      # number of long blocks
         n_max = ceil_div(N, B)               # longest block length
-        P     = 2 * ceil_div(n_max * q[L], 200)
+        P     = 2 * ceil_div(n_max * q[lvl], 200)
         for b in 0 .. B−1:
             n[b] = s + 1 if b < r else s     # long blocks come first
             k[b] = n[b] − P
         K = N − B * P
         return B, n, P, k, K
 
-Properties of the result, for every level L and every N ≥ N_min[L]:
+Properties of the result, for every level lvl and every N ≥ N_min[lvl]:
 
 - Every block length is at most 255, and two block lengths differ by at most one.
 - The block lengths add up to N, so every codeword of the data area belongs to exactly one block.
 - P is even and at least 2.
 - P is computed from the longest block and rounded up to an even number, so every block meets the target share of 4.5. The rounding up makes the actual share higher than the target for small N (for example 18.8% instead of 15% at N = 32, level 0).
-- Every block has at least one message byte. For B = 1 this holds from N_min[L] upward. At level 3, N = 3 would leave one message byte but N = 4 would leave none (P = 4), so the minimum is set at 5, above which every N works. For B ≥ 2 every block has at least 128 bytes, P is at most 154 (level 3) and every block keeps at least 50 message bytes.
+- Every block has at least one message byte. For B = 1 this holds from N_min[lvl] upward. At level 3, N = 3 would leave one message byte but N = 4 would leave none (P = 4), so the minimum is set at 5, above which every N works. For B ≥ 2 every block has at least 128 bytes, P is at most 154 (level 3) and every block keeps at least 50 message bytes.
 
 Rules:
 
-- A generator MUST NOT produce a symbol whose N is less than N_min[L] (3 for levels 0 to 2, 5 for level 3). A reader MUST reject such a symbol.
+- A generator MUST NOT produce a layer whose N is less than N_min[lvl] (3 for levels 0 to 2, 5 for level 3). A reader MUST reject such a layer. The base layer always meets this: the smallest symbol, 20 × 20, has N = 20 (table below). The colour layer has its own, higher minimum (chapter 7, 7.8.2).
 - A generator and a reader MUST use exactly this algorithm. No other block layout is allowed in format version 0.
-- The data area always uses all N codewords. A generator that has less content than K fills the container to exactly K bytes by the padding rule of chapter 3.
+- The data area always uses all N codewords. The generator fills the message to exactly K bytes by the padding rule of chapter 3 (3.8); the container MUST fit in K bytes (chapter 3, 3.2.3).
+
+Smallest symbol at each level. Chapter 5 (5.7) gives D; the smallest container (lead byte, body length, content type, CRC-32C, empty content) is 7 bytes (chapter 3, 3.2).
+
+| Level | Smallest symbol | N | P | K | Largest content of one record, codec 0 |
+|---|---|---|---|---|---|
+| 0 | 20 × 20 | 20 | 4 | 16 | 9 bytes |
+| 1 | 20 × 20 | 20 | 6 | 14 | 7 bytes |
+| 2 | 20 × 20 | 20 | 10 | 10 | 3 bytes |
+| 3 | 20 × 20 | 20 | 12 | 8 | 1 byte |
 
 Why the fewest blocks: with a fixed parity share, a longer block corrects more errors in total, and the interleaving of 4.8 already spreads a local defect across blocks. The decoding cost of a 255-byte block is small against the reader's frame budget.
 
@@ -258,7 +267,7 @@ Reed-Solomon codes (1960), Gallager's regular LDPC codes (1962) and plain PEG co
 
 ## 4.11 Worked examples
 
-Values in this section were computed by a script that implements 4.2 to 4.8.
+Values in this section were computed by a script that implements 4.2 to 4.8. Annex A (A.2) gives a complete symbol with N = 42 at level 0.
 
 ### 4.11.1 N = 50 codewords at level 1 (M)
 

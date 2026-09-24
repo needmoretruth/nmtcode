@@ -22,8 +22,8 @@ Coordinates follow chapter 1 (1.4): (x, y) in modules, origin at the top-left mo
 
 | Parameter | Value |
 |---|---|
-| Width W | a multiple of 4, 16 ≤ W ≤ 4108 (format word, chapter 2) |
-| Height H | a multiple of 4, 16 ≤ H ≤ 4108. W and H are independent |
+| Width W | a multiple of 4, 20 ≤ W ≤ 4108 (format word, chapter 2) |
+| Height H | a multiple of 4, 20 ≤ H ≤ 4108. W and H are independent |
 | Quiet zone | at least 2 modules on each of the four sides, all light |
 
 - A generator MUST surround the symbol with a light quiet zone of at least 2 modules on every side. The default is 2 modules.
@@ -135,7 +135,7 @@ Design notes:
 
 - Each copy lies within 10 modules of its finder's corner, in the two strips along the symbol's edges. The two copies sit at opposite corners, so covering any one corner, or any one edge, leaves at least one copy and three finders visible.
 - A copy's positions are fixed relative to its own corner. A reader can read copy B from the BR finder alone, before it knows W and H.
-- For W = 16 or H = 16 the two strips of a copy end exactly at the separator of the neighbouring finder. No format module overlaps another function module for any allowed W and H.
+- No format module overlaps another function module for any allowed W and H. At W = 20 copy A's row strip ends at x = 9 and the TR separator is at x = 14; H = 20 gives the same gap in y.
 
 ## 5.6 Reference marks
 
@@ -147,14 +147,14 @@ A reference mark is a 3 × 3 pattern: eight dark modules around a light centre.
 
 ### 5.6.1 Positions
 
-For a side of N modules (N = W for x, N = H for y), define the line count n and the line coordinates:
+For a side of Z modules (Z = W for x, Z = H for y), define the line count n and the line coordinates:
 
-    S = N − 5
-    n = 1                    if N < 48
-    n = ceil_div(S, 24)      if N ≥ 48        # ceil_div(a, d) = floor((a + d − 1) / d)
+    S = Z − 5
+    n = 1                    if Z < 48
+    n = ceil_div(S, 24)      if Z ≥ 48        # ceil_div(a, d) = floor((a + d − 1) / d)
     line[i] = 2 + floor((2·i·S + n) / (2·n))   for i = 0 .. n
 
-line[i] is 2 + round(i·S/n), with halves rounded up. line[0] = 2 and line[n] = N − 3 are the centre lines of the finders. The lines divide the span between the finder centres into n equal parts, rounded to whole modules, so the last spacing is never a short remainder.
+line[i] is 2 + round(i·S/n), with halves rounded up. line[0] = 2 and line[n] = Z − 3 are the centre lines of the finders. The lines divide the span between the finder centres into n equal parts, rounded to whole modules, so the last spacing is never a short remainder.
 
 A reference mark is centred on every point (xline[i], yline[j]), 0 ≤ i ≤ n_W, 0 ≤ j ≤ n_H, except the four points (2, 2), (W−3, 2), (2, H−3), (W−3, H−3), which are finder centres. The mark occupies the 3 × 3 modules centred there.
 
@@ -165,10 +165,10 @@ The number of marks is
 Consequences:
 
 - Both sides below 48: no marks. One side of 48 or more: marks lie only on the two edge lines of that side, in line with the finder centres, for example along the top and bottom edges of a wide, short symbol.
-- For N ≥ 48 consecutive lines are between 17 and 24 modules apart, checked for every N from 48 to 4108.
-- Nothing is skipped other than the four finder centres. Every mark is at least 18 modules from both left and right edges, or from both top and bottom edges, because on a side of 48 or more line[1] ≥ 19 and line[n−1] ≤ N − 20. A finder, its separator and its format area lie within 10 modules of both edges at their corner. So no mark overlaps them, and marks, at least 17 modules apart, do not overlap each other.
+- For Z ≥ 48 consecutive lines are between 17 and 24 modules apart, checked for every Z from 48 to 4108.
+- Nothing is skipped other than the four finder centres. Every mark is at least 18 modules from both left and right edges, or from both top and bottom edges, because on a side of 48 or more line[1] ≥ 19 and line[n−1] ≤ Z − 20. A finder, its separator and its format area lie within 10 modules of both edges at their corner. So no mark overlaps them, and marks, at least 17 modules apart, do not overlap each other.
 
-Examples: N = 48 gives lines 2, 24, 45; N = 64 gives 2, 22, 41, 61; N = 100 gives 2, 26, 50, 73, 97.
+Examples: Z = 48 gives lines 2, 24, 45; Z = 64 gives 2, 22, 41, 61; Z = 100 gives 2, 26, 50, 73, 97.
 
 Reader note (informative): a reader predicts each mark's position from the finders and the marks already found, then searches a small window by correlating the 3 × 3 template. The light centre gives a position that does not depend on the data modules outside the ring.
 
@@ -178,13 +178,14 @@ Every module that is not a function module is a data module. Their number is
 
     D(W, H) = W·H − 100 − 44 − 94 − 9·M
 
-(finders 4 × 25, separators 44, format copies 2 × 47, marks 9 each, M from 5.6.1). The codeword count used by chapter 4 is N = floor(D / 8). The remainder R = D mod 8 is defined in 5.9.
+(finders 4 × 25, separators 44, format copies 2 × 47, marks 9 each, M from 5.6.1). The codeword count used by chapter 4 is N = floor(D / 8); chapter 4 (4.6) turns N and the level into the message capacity K, and chapter 3 fills exactly K bytes. The remainder R = D mod 8 is defined in 5.9.
 
 | W × H | Marks M | Data modules D | Codewords N | Remainder R |
 |---|---|---|---|---|
-| 16 × 16 | 0 | 18 | 2 | 2 |
 | 20 × 20 | 0 | 162 | 20 | 2 |
+| 20 × 28 | 0 | 322 | 40 | 2 |
 | 24 × 24 | 0 | 338 | 42 | 2 |
+| 28 × 28 | 0 | 546 | 68 | 2 |
 | 32 × 32 | 0 | 786 | 98 | 2 |
 | 48 × 48 | 5 | 2021 | 252 | 5 |
 | 64 × 64 | 12 | 3750 | 468 | 6 |
@@ -193,9 +194,9 @@ Every module that is not a function module is a data module. Their number is
 | 1000 × 600 | 1114 | 589736 | 73717 | 0 |
 | 4108 × 4108 | 29580 | 16609206 | 2076150 | 6 |
 
-The formula was checked against a module-by-module count for every W and H from 16 to 296 in steps of 4, and for 1000 × 600.
+The formula was checked against a module-by-module count for every W and H from 20 to 296 in steps of 4, and for 1000 × 600.
 
-A 16 × 16 symbol has N = 2, below the minimum of 3 codewords in chapter 4 (4.6), so it cannot be generated. The smallest usable sizes are 16 × 20 and 20 × 16 (D = 82, N = 10).
+The smallest symbol is 20 × 20. A side of 16 is not allowed (chapter 2, 2.2): 16 × 16 would leave N = 2 and 16 × 20 only N = 10.
 
 ## 5.8 Placement order
 
@@ -253,7 +254,7 @@ Register form, equivalent to the recurrence: keep a 31-bit register r, initially
     f    = (bit 30 of r) XOR (bit 27 of r)
     r    = ((r << 1) AND 0x7FFFFFFF) OR f
 
-The first 64 bits, w[0] … w[63], are 0x2BB387F8EC5F707F.
+The first 64 bits, w[0] … w[63], are 0x2BB387F8EC5F707F. The colour layer uses the same generator with its own seed (chapter 7, 7.8.4).
 
 ### 5.10.2 Why this sequence
 
@@ -339,3 +340,5 @@ The first 32 placement positions and their module values, for a codeword stream 
 | 31 | (7, 16) | c[3] | 0 | 0 | 0 |
 
 Column pairs 0, 1 and 2 hold 8 data modules each (rows 10 to 13). Pair 3 walks upward from y = 19. The last codeword c[19] ends at k = 159. The remainder modules are P[160] = (18, 6) and P[161] = (19, 6), with b = 0 and w[160] = 1, w[161] = 0, so they are dark and light.
+
+Annex A (A.2) gives the complete module matrix of a 24 × 24 symbol.

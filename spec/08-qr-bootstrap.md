@@ -117,7 +117,7 @@ An NMT Code reader need not decode QR symbols. A reader that decodes QR symbols 
 For an associated QR symbol, the reader compares its decoded byte string with every value of 8.2 that it knows, byte for byte (no case folding, no URL normalisation):
 
 - **Equal to a known value.** The reader MUST NOT present it as content of the NMT Code symbol and MUST NOT open it. It MAY ignore it silently.
-- **Different from every known value.** The reader MUST NOT present that content as a result in any form (no display as a result, no link, no copy, no open) and MUST report an error saying that the QR code beside this NMT Code does not match the NMT Code bootstrap. It SHOULD mark the QR symbol's position in the image.
+- **Different from every known value.** The reader MUST NOT present that content as a result in any form (no display as a result, no link, no copy, no open) and MUST report an error saying that the QR code beside this NMT Code does not match the NMT Code bootstrap (`E_BOOTSTRAP_MISMATCH`, chapter 9, 9.8). It SHOULD mark the QR symbol's position in the image.
   - The reader MAY still present the NMT Code symbol's own result, together with that error. It SHOULD NOT offer the NMT Code symbol's action record (chapter 3, 3.4) until the user has seen the error.
   - One mismatching decode is enough; the reader does not wait for a second frame.
 

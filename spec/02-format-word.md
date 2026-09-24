@@ -4,7 +4,7 @@ Specification version 0.1 (draft). Licensed under CC BY 4.0 (see `LICENSE` in th
 
 ## 2.1 Scope
 
-The format word tells a reader what it needs before it reads the data area: the format version, the symbol class, the size, the error-correction level and the colour profile. This chapter defines:
+The format word tells a reader what it needs before it reads the data area: the format version, the symbol class, the size, the error-correction level, the colour profile and the chroma cell size. This chapter defines:
 
 - its 28 data bits (2.2) and what a reader does with each value (2.3);
 - the code that protects it (2.4) and the mask applied to it (2.5);
@@ -21,11 +21,11 @@ The format word's data part is 28 bits, d[27] … d[0]. d[27] is sent first. Mul
 |---|---|---|---|---|
 | d[27..26] | Format version | 2 | 0–3 | 0 = this specification (0.x). 1–3 reserved |
 | d[25] | Symbol class | 1 | 0–1 | 0 = static single code. 1 = transfer tile (the container carries transfer fields; defined in a later 0.x version) |
-| d[24..15] | Width code w | 10 | 0–1023 | W = 4 × (w + 4) modules, 16 ≤ W ≤ 4108 |
-| d[14..5] | Height code h | 10 | 0–1023 | H = 4 × (h + 4) modules, 16 ≤ H ≤ 4108 |
-| d[4..3] | Error-correction level | 2 | 0–3 | Recovery comparable to QR Code levels: 0 ≈ L, 1 ≈ M, 2 ≈ Q, 3 ≈ H. Parity is about 15, 30, 50 and 60% of the codewords. Chapter 4 gives the exact parity for every size |
-| d[2..1] | Colour profile | 2 | 0–3 | 0 = black and white. 1 = luminance base layer plus 4-colour cells. 2 = pure 4-colour grid. 3 reserved. Chapter 7 defines 1 and 2 |
-| d[0] | Colour cell size | 1 | 0–1 | 0 = a colour cell is one module. 1 = a colour cell is 2 × 2 modules. MUST be 0 when the colour profile is 0 |
+| d[24..15] | Width code w | 10 | 1–1023 | W = 4 × (w + 4) modules, 20 ≤ W ≤ 4108. w = 0 (W = 16) is invalid |
+| d[14..5] | Height code h | 10 | 1–1023 | H = 4 × (h + 4) modules, 20 ≤ H ≤ 4108. h = 0 (H = 16) is invalid |
+| d[4..3] | Error-correction level | 2 | 0–3 | Recovery comparable to QR Code levels: 0 ≈ L, 1 ≈ M, 2 ≈ Q, 3 ≈ H. Parity is at least 15, 30, 50 and 60% of the codewords, which corrects about 7.5, 15, 25 and 30% of them as byte errors. Chapter 4 (4.5, 4.6) gives the exact parity for every size |
+| d[2..1] | Colour profile | 2 | 0–1 | 0 = black and white. 1 = luminance base layer plus chroma cells, 4 colours (chapter 7). 2 and 3 are reserved |
+| d[0] | Chroma cell size | 1 | 0–1 | 0 = a chroma cell is 1 × 1 module. 1 = a chroma cell is 2 × 2 modules. MUST be 0 when the colour profile is 0 |
 
 As an integer:
 
@@ -35,19 +35,18 @@ Every later format version keeps d[27..26] as the format version field and keeps
 
 ## 2.3 Field values and reader behaviour
 
-A generator MUST NOT write a reserved value or the combination colour profile 0 with cell size 1.
+A generator MUST NOT write a reserved or invalid value (width or height code 0, colour profile 2 or 3) or the combination colour profile 0 with chroma cell size 1.
 
 After a copy has been decoded (2.7):
 
 | Condition | Reader behaviour |
 |---|---|
-| Colour profile 3, or colour profile 0 with cell size 1 | The copy counts as not decoded (2.7, step 3) |
+| Format version 0 and: width code 0 or height code 0 (W or H = 16), colour profile 2 or 3, or colour profile 0 with chroma cell size 1 | The copy counts as not decoded (2.7, step 3). If no copy is decoded, the symbol is rejected |
 | Format version 1, 2 or 3 in the chosen word | Reject the symbol. The reader SHOULD tell the user that a newer reader is needed (chapter 9, 9.2) |
 | Symbol class 1 | A reader that does not implement transfer tiles MUST NOT present content, and SHOULD tell the user that the code is one frame of a transfer |
-| W and H give fewer than 3 codewords (chapter 4, 4.6; for example 16 × 16, chapter 5, 5.7) | Reject the symbol |
-| Colour profile 1 or 2 | Continue as chapter 7 says, including for a reader that supports only black and white (chapter 1, 1.6) |
+| Colour profile 1 | Continue as chapter 7 says, including for a reader that supports only black and white (chapter 1, 1.6) |
 
-All values of the width code, the height code and the error-correction level are defined.
+Every other value of the width code, the height code and the error-correction level is defined. Every allowed size, 20 × 20 and up, has at least 20 codewords, which meets the minimum of chapter 4 (4.6) at every level.
 
 ## 2.4 Code
 
@@ -120,7 +119,7 @@ A reader decodes the format word as follows.
 
 1. **Sample.** For each copy whose finder is visible, sample its 47 modules, relative to that copy's finder (chapter 5, 5.5), into a word F'. Set R = F' XOR MASK.
 2. **Correct.** Find the codeword C at Hamming distance e ≤ 3 from R. If there is none, the copy is not decoded. Because the minimum distance is 8, such a C is unique when it exists. A reader MUST NOT accept a codeword at distance 4 or more from R.
-3. **Check fields.** If the colour profile is 3, or the colour profile is 0 with cell size 1, the copy is not decoded.
+3. **Check fields.** If the format version is 0 and the width code or the height code is 0, the colour profile is 2 or 3, or the colour profile is 0 with chroma cell size 1, the copy is not decoded. A copy with format version 1, 2 or 3 is decoded; only its version field is read (2.3).
 4. **Choose.**
    - If no copy is decoded, the reader MUST reject the symbol and MUST NOT present any content from it.
    - If exactly one copy is decoded, use it.
@@ -139,7 +138,7 @@ Integrity note: of all 2^19 syndromes, 17 344 (3.3%) are correctable, so a rando
 
 ## 2.8 Worked example
 
-W = 20, H = 20, static class, error-correction level 1, colour profile 0, cell size 0, format version 0. Values computed by a script that implements 2.2 to 2.6.
+W = 20, H = 20 (the smallest symbol), static class, error-correction level 1, colour profile 0, chroma cell size 0, format version 0. Values computed by a script that implements 2.2 to 2.6.
 
 Fields:
 
@@ -151,7 +150,7 @@ Fields:
 | Height code | 1 | `0000000001` |
 | Error-correction level | 1 | `01` |
 | Colour profile | 0 | `00` |
-| Cell size | 0 | `0` |
+| Chroma cell size | 0 | `0` |
 
 | Quantity | Hex | Binary (most significant first) |
 |---|---|---|

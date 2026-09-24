@@ -21,12 +21,12 @@ NMT Code does not replace QR Code and is not compatible with QR readers. A symbo
 
 ## 1.3 Structure of a symbol
 
-A symbol is a rectangle of W × H square modules surrounded by a quiet zone.
+A symbol is a rectangle of W × H square modules surrounded by a quiet zone. W and H are multiples of 4 from 20 to 4108 (chapter 2).
 
 | Layer | Carried by | Content | Chapter |
 |---|---|---|---|
 | Function patterns | fixed modules | four corner finders, reference marks | 5 |
-| Format word | fixed modules, two copies | format version, symbol class, W, H, error-correction level, colour profile | 2 |
+| Format word | fixed modules, two copies | format version, symbol class, W, H, error-correction level, colour profile, chroma cell size | 2 |
 | Base layer | luminance of data modules | error-corrected container: header, base records, integrity check | 3, 4, 5, 6 |
 | Colour layer (optional) | chroma of data cells | error-corrected extension records | 7 |
 
@@ -70,6 +70,8 @@ A profile is a named set of defaults. All values a reader needs are stated in th
 | `color` | profile 1 of chapter 7 | 0 | as `screen` | experimental in 0.1 |
 
 A generator MUST let the user change the size, the error-correction level, the colour profile, the quiet zone (2 modules or more) and the module size.
+
+Size selection is a generator choice, not part of the format; a reader accepts any valid size. The RECOMMENDED default: among the valid sizes whose message capacity K (chapter 4) holds the container, pick the smallest square. If the user gives an aspect ratio, a maximum width or a maximum height, pick the size with the smallest W × H that meets it, and among equal areas the one closest to the requested aspect ratio.
 
 ## 1.6 Conformance
 

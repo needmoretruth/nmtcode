@@ -2,7 +2,7 @@
 
 Spec version 0.1 (draft). This chapter is part of the NMT Code format specification and is licensed under CC BY 4.0.
 
-This chapter defines the codec layer: how the content bytes of a symbol are turned into the container's coded field and back. The container fields that carry the codec ID, the dictionary ID and the declared content length are defined in 03-container-and-records.md. Error correction (04-error-correction.md) and placement (05-geometry-and-placement.md) act on the container after this layer.
+This chapter defines the codec layer: how the content bytes of a symbol are turned into the container's coded field and back. The container fields that carry the codec ID, the dictionary ID, the decoded length and the coded field are defined in 03-container-and-records.md (3.2). Error correction (04-error-correction.md) and placement (05-geometry-and-placement.md) act on the container after this layer.
 
 ## 6.1 Interface
 
@@ -10,10 +10,10 @@ A decoder of this layer receives four values from the container (03-container-an
 
 | Name | Meaning | Range |
 |---|---|---|
-| `c` | codec ID | unsigned integer; see 6.2 |
-| `d` | dictionary ID | unsigned integer; see 6.11 |
-| `L` | declared content length: the number of content bytes after decoding | 0 ≤ `L` ≤ `LIMIT` (6.4) |
-| `C` | coded field: the bytes this layer decodes | `N` bytes, `N` ≥ 0, delimited by the container |
+| `c` | codec ID: 4 bits in the container's lead byte, where 15 means a LEB128 codec ID follows (03-container-and-records.md, 3.2.2) | unsigned integer; see 6.2 |
+| `d` | dictionary ID: present in the container only for a codec that takes a dictionary (6.2); 0 when absent | unsigned integer; see 6.11 |
+| `L` | decoded length: the number of content bytes after decoding. Carried by the container when `c` ≠ 0; equal to `Lc` when `c` = 0 | 0 ≤ `L` ≤ `LIMIT` (6.4) |
+| `C` | coded field: the bytes this layer decodes (the container's content field) | `Lc` bytes, `Lc` ≥ 0, delimited by the container's body length |
 
 The output is exactly `L` bytes of content. Content is an octet string; its meaning is given by the container's content type, which no codec reads.
 
@@ -23,27 +23,27 @@ The encoder receives the content bytes and produces (`c`, `d`, `L`, `C`).
 
 The codec ID registry is append-only. An assigned ID never changes meaning and is never reused.
 
-| ID | Name | Applicable content | Dictionary ID `d` | Section |
+| ID | Name | Applicable content | Dictionary ID field `d` | Section |
 |---:|---|---|---|---|
-| 0 | stored | any | MUST be 0 | 6.5 |
-| 1 | digits | every byte in 0x30–0x39 (`0`–`9`) | MUST be 0 | 6.6 |
-| 2 | upper-alphanumeric | every byte in the 45-character set of 6.7 | MUST be 0 | 6.7 |
-| 3 | token table + short-text model | any | 0 = built-in model 0, or a registered dictionary of kind "short-text model" | 6.8 |
-| 4 | Hangul syllable packing | well-formed UTF-8 | MUST be 0 | 6.9 |
-| 5 | brotli | any | 0 = brotli's built-in dictionary only, or a registered dictionary of kind "brotli prefix" | 6.10 |
+| 0 | stored | any | absent | 6.5 |
+| 1 | digits | every byte in 0x30–0x39 (`0`–`9`) | absent | 6.6 |
+| 2 | upper-alphanumeric | every byte in the 45-character set of 6.7 | absent | 6.7 |
+| 3 | token table + short-text model | any | present: 0 = built-in model 0, or a registered dictionary of kind "short-text model" | 6.8 |
+| 4 | Hangul syllable packing | well-formed UTF-8 | absent | 6.9 |
+| 5 | brotli | any | present: 0 = brotli's built-in dictionary only, or a registered dictionary of kind "brotli prefix" | 6.10 |
 | 6–9 | reserved: text and entropy codecs (for example a frequency-ordered Hangul syllable table) | — | — | — |
 | 10–13 | reserved: structured-data codecs (for example a format-aware codec for tabular or schema-described data) | — | — | — |
 | 14–15 | reserved | — | — | — |
 | ≥ 16 | reserved for future format versions | — | — | — |
 
-- IDs 6–15 MAY be assigned by a later 0.x revision of this specification without a new format version. A decoder that does not implement an ID MUST fail with `E_UNSUPPORTED_CODEC`.
+- IDs 6–15 MAY be assigned by a later 0.x revision of this specification without a new format version; the assignment states whether the codec takes a dictionary ID. A decoder that does not implement an ID MUST fail with `E_UNSUPPORTED_CODEC` before it reads any further container field. ID 15 is written through the escape of 03-container-and-records.md (3.2.4).
 - IDs ≥ 16 MUST NOT appear in format version 0. A format-version-0 decoder MUST fail with `E_UNSUPPORTED_CODEC`.
-- A decoder MUST fail with `E_DICTIONARY_MISMATCH` when `d` is not allowed for `c` by the table above, or when the registered kind of `d` (6.11) does not match `c`.
+- A decoder MUST fail with `E_DICTIONARY_MISMATCH` when the registered kind of `d` (6.11) does not match `c`.
 
 ## 6.3 Encoder selection rule
 
 1. The encoder computes the coded field for every applicable codec (6.2) and, for codecs 3 and 5, for dictionary 0 and every registered dictionary of the matching kind that it carries.
-2. It compares the candidates by the total size, in bytes, of the container fields that depend on the choice (the codec ID field, the dictionary ID field and the coded field, as serialised by 03-container-and-records.md). With one-byte codec and dictionary ID fields this is the same as comparing `N`.
+2. It compares the candidates by the total size in bytes of the serialised container (03-container-and-records.md, 3.2), CRC-32C included and padding excluded. Only the codec ID escape, the dictionary ID, the decoded length, the body length and the coded field differ between candidates, so a candidate with a smaller coded field can still lose by the one or two bytes of its dictionary ID and decoded length.
 3. It picks the smallest. Ties go to the lowest codec ID, then to the lowest dictionary ID.
 4. Stored (codec 0) is always a candidate. So when no codec is shorter than stored, stored is chosen by rule 3.
 
@@ -55,31 +55,31 @@ Limits:
 
 | Name | Value | Meaning |
 |---|---|---|
-| `MAX_CONTENT_LEN_V0` | 16,777,216 (16 MiB) | absolute cap on `L` in format version 0 |
+| `MAX_CONTENT_LEN_V0` | 16,777,216 (16 MiB) | absolute cap on `L` of one container in format version 0. Limits on a whole multi-frame transfer belong to the transfer chapter |
 | `LIMIT` | reader-chosen, ≤ `MAX_CONTENT_LEN_V0` | the cap a given reader applies; a reader MAY choose a lower value |
 
 Rules:
 
-1. The decoder MUST check `L` ≤ `LIMIT` before allocating any buffer that depends on `L`. If the check fails it MUST fail with `E_TOO_LARGE`.
+1. Before allocating any buffer that depends on `L`, the decoder MUST check `L` ≤ `MAX_CONTENT_LEN_V0`, else `E_MALFORMED`, and then `L` ≤ `LIMIT`, else `E_TOO_LARGE`.
 2. The decoder MUST run the codec-specific length checks of 6.6–6.10 before allocating.
 3. The decoder allocates at most `L` bytes of output plus codec state bounded in this chapter (the brotli window of 6.10 and the tables of 6.8).
 4. Output MUST be exactly `L` bytes. A codec that would produce more than `L` bytes fails at the first byte beyond `L`; a codec whose input ends before `L` bytes are produced fails.
 5. Every malformed input — an out-of-range value, a reserved code, a read past the end of `C` (except the zero extension that codec 3 defines), trailing data, non-zero padding bits — MUST produce `E_MALFORMED`. It MUST NOT cause a panic, an abort, an out-of-bounds access or unbounded work.
-6. Decoding work MUST be bounded by a constant times (`N` + `L` + the size of the dictionary in use).
+6. Decoding work MUST be bounded by a constant times (`Lc` + `L` + the size of the dictionary in use).
 
-Error classes (names used in this chapter; 09-versions-and-registries.md may map them to reader messages):
+Error classes (09-versions-and-registries.md, 9.8, collects them with the errors of the other chapters; reader wording is not part of this specification):
 
 | Error | Condition | Reader message intent |
 |---|---|---|
 | `E_UNSUPPORTED_CODEC` | codec ID reserved or not implemented | a newer reader is needed |
 | `E_UNKNOWN_DICTIONARY` | `d` ≠ 0 and not in the reader's registry revision, or in the private-use range | a newer reader, or the issuing application, is needed |
-| `E_DICTIONARY_MISMATCH` | `d` not allowed for `c` | the symbol is invalid |
+| `E_DICTIONARY_MISMATCH` | the registered kind of `d` does not match `c` | the symbol is invalid |
 | `E_TOO_LARGE` | `L` > `LIMIT` | the content exceeds this reader's limit |
-| `E_MALFORMED` | any other decoding failure | the symbol is invalid |
+| `E_MALFORMED` | `L` > `MAX_CONTENT_LEN_V0`, or any other decoding failure | the symbol is invalid |
 
 ## 6.5 Codec 0 — stored
 
-`C` is the content. The decoder MUST fail with `E_MALFORMED` unless `N` = `L`.
+`C` is the content, and `L` = `Lc`: the container carries no decoded length for codec 0 (03-container-and-records.md, 3.2.4).
 
 ## 6.6 Codec 1 — digits
 
@@ -97,9 +97,9 @@ Encoding:
    | 1 | 4 bits | 0–9 |
 
 3. The fields are concatenated. Their total length is `B` = 10·⌊`L`/3⌋ + (0 if `L` mod 3 = 0, 4 if `L` mod 3 = 1, 7 if `L` mod 3 = 2).
-4. The bit string is padded with 0 bits to a byte boundary. `N` = ⌈`B`/8⌉.
+4. The bit string is padded with 0 bits to a byte boundary. `Lc` = ⌈`B`/8⌉.
 
-Decoding: the decoder MUST check `N` = ⌈`B`/8⌉ before allocating. It MUST fail with `E_MALFORMED` on a group value outside the valid range or a non-zero padding bit. Leading zeros are preserved because the group width, not the value, fixes the number of digits.
+Decoding: the decoder MUST check `Lc` = ⌈`B`/8⌉ before allocating. It MUST fail with `E_MALFORMED` on a group value outside the valid range or a non-zero padding bit. Leading zeros are preserved because the group width, not the value, fixes the number of digits.
 
 Density: 10 bits per 3 digits, the same as QR numeric mode (3.33 bits per digit; the information content of a random digit is 3.32 bits).
 
@@ -119,9 +119,9 @@ Encoding:
 
 1. Pair the characters from the start. A pair (`a`, `b`) is written as 45·`a` + `b` in 11 bits (valid 0–2024).
 2. If `L` is odd, the last character is written in 6 bits (valid 0–44).
-3. `B` = 11·⌊`L`/2⌋ + 6·(`L` mod 2). Pad with 0 bits to a byte boundary. `N` = ⌈`B`/8⌉.
+3. `B` = 11·⌊`L`/2⌋ + 6·(`L` mod 2). Pad with 0 bits to a byte boundary. `Lc` = ⌈`B`/8⌉.
 
-Decoding: the decoder MUST check `N` = ⌈`B`/8⌉ before allocating, and MUST fail with `E_MALFORMED` on a pair value > 2024, a single value > 44, or a non-zero padding bit.
+Decoding: the decoder MUST check `Lc` = ⌈`B`/8⌉ before allocating, and MUST fail with `E_MALFORMED` on a pair value > 2024, a single value > 44, or a non-zero padding bit.
 
 ## 6.8 Codec 3 — token table and short-text model
 
@@ -138,7 +138,7 @@ Codec 3 codes the content as a sequence of symbols. Each symbol is a literal byt
 
 ### 6.8.2 Token table
 
-Parameter `TOKEN_TABLE_V0`: tunable in 0.x, fixed before 1.0. The entries below are a draft chosen from public knowledge of common URL and payload parts: URI schemes and payload prefixes (IDs 0–29), host pieces and common hosts (30–65), top-level domains from the IANA root zone database with a leading dot, plus common second-level registrations (66–138), path and query pieces (139–208), keys of Wi-Fi, one-time-password and payment payloads (209–222), and English text pieces (223–239). The final table is tuned against the measurement corpus in stage 7 of the project plan and frozen before 1.0.
+Parameter `TOKEN_TABLE_V0`: tunable in 0.x, fixed before 1.0. The entries below are a draft chosen from public knowledge of common URL and payload parts: URI schemes and payload prefixes (IDs 0–29), host pieces and common hosts (30–65), top-level domains from the IANA root zone database with a leading dot, plus common second-level registrations (66–138), path and query pieces (139–208), keys of Wi-Fi, one-time-password and payment payloads (209–222), and English text pieces (223–239). The final table is tuned against a measurement corpus and frozen before 1.0.
 
 Each token is shown as a JSON string literal (so `"\r\n"` is the two bytes 0x0D 0x0A and spaces are visible). Every token is ASCII.
 
@@ -228,7 +228,7 @@ The frequencies sum to exactly 65,536 = 2^16 (the frequency of `/` absorbs the r
 
 ### 6.8.4 Short-text model dictionaries
 
-A registered dictionary of kind "short-text model" defines an order-`k` hashed context model. Its contents are tuned in stage 7 of the project plan; its byte format is fixed here.
+A registered dictionary of kind "short-text model" defines an order-`k` hashed context model. Its contents are tuned by measurement; its byte format is fixed here.
 
 Context and slot selection:
 
@@ -266,7 +266,7 @@ A decoder MUST reject (as a build or load error, before any symbol is decoded) a
 
 Constants: frequency total 2^16; range width 32 bits; renormalisation threshold 2^24. For a vector `f`, `cum[s]` = Σ `f[t]` for `t` < `s`.
 
-Decoder (normative). Let `C[i]` = 0 for `i` ≥ `N` (zero extension).
+Decoder (normative). Let `C[i]` = 0 for `i` ≥ `Lc` (zero extension).
 
 ```
 code  = C[0]<<24 | C[1]<<16 | C[2]<<8 | C[3]
@@ -286,8 +286,8 @@ while len(out) < L:
         range = range << 8
     append the output bytes of s to out
     if len(out) > L: fail E_MALFORMED
-if N > p: fail E_MALFORMED             (bytes the decoder never read)
-if N > 0 and C[N-1] == 0x00: fail E_MALFORMED
+if Lc > p: fail E_MALFORMED            (bytes the decoder never read)
+if Lc > 0 and C[Lc-1] == 0x00: fail E_MALFORMED
 ```
 
 All values fit in 32 bits (`code` < `range` ≤ 2^32 − 1 holds after every step for a valid stream). The final two checks make the length of `C` canonical for a given symbol sequence.
@@ -308,9 +308,9 @@ find the smallest m, 0 <= m <= M, such that
 C = the first m bytes of V written as an M-byte big-endian integer
 ```
 
-`V` lies in the final interval, so the decoder reproduces every symbol. By minimality, `C` never ends in 0x00, and `N` = `m` ≤ `M` = the decoder's final `p`. An implementation with a fixed-width `low` MUST propagate carries into bytes already produced (as the LZMA range encoder does with its cached byte); this does not change the output.
+`V` lies in the final interval, so the decoder reproduces every symbol. By minimality, `C` never ends in 0x00, and `Lc` = `m` ≤ `M` = the decoder's final `p`. An implementation with a fixed-width `low` MUST propagate carries into bytes already produced (as the LZMA range encoder does with its cached byte); this does not change the output.
 
-Termination is by `L`: there is no end-of-stream symbol. Empty content gives `N` = 0.
+Termination is by `L`: there is no end-of-stream symbol. Empty content gives `Lc` = 0.
 
 ### 6.8.6 Reference parse
 
@@ -322,11 +322,11 @@ Applicable when the content is well-formed UTF-8 (no surrogate code points, no o
 
 ### 6.9.1 Structure
 
-- The coded field is a bit string, most significant bit first. When `L` = 0, `N` MUST be 0.
+- The coded field is a bit string, most significant bit first. When `L` = 0, `Lc` MUST be 0.
 - Bit 0 is the initial mode: 0 = H mode, 1 = A mode.
 - Then units follow. In H mode a unit is 14 bits; in A mode, 7 bits. Some units change the mode and output nothing.
 - Decoding stops when exactly `L` bytes have been output. After the last unit, fewer than 8 bits remain, and they MUST all be 0. A unit that would take the output beyond `L` bytes, or a read beyond the end of `C`, is `E_MALFORMED`.
-- Before allocating, the decoder MUST check 7·`L` ≤ 16·`N` (a 14-bit unit outputs at most 4 bytes), else `E_MALFORMED`.
+- Before allocating, the decoder MUST check 7·`L` ≤ 16·`Lc` (a 14-bit unit outputs at most 4 bytes), else `E_MALFORMED`.
 
 ### 6.9.2 H-mode units (14 bits)
 
@@ -432,11 +432,11 @@ Registry contents in this version:
 |---:|---|---:|---|---|---|
 | 0 | none | 0 | — | — | 0.1 |
 
-The first entries (a brotli prefix dictionary for URLs and short text, a Korean short-text model) are built and measured in stage 7 of the project plan and registered before 1.0.
+The first entries (a brotli prefix dictionary for URLs and short text, a Korean short-text model) are built, measured and registered before 1.0.
 
 ## 6.12 Worked examples
 
-All values were computed by a script and checked by decoding them back. The QR figures are for QR versions 1–9 (count field 10 bits numeric, 9 alphanumeric, 8 byte) and use the cheapest segmentation of the exact same string; they count QR's 4-bit mode indicator and count field but not its terminator or padding. The NMT figures are the coded field `C` only. The container (03-container-and-records.md) adds the content length, codec ID and dictionary ID, which do the job of QR's mode indicator and count field.
+All values were computed by a script and checked by decoding them back. The QR figures are for QR versions 1–9 (count field 10 bits numeric, 9 alphanumeric, 8 byte) and use the cheapest segmentation of the exact same string; they count QR's 4-bit mode indicator and count field but not its terminator or padding. The NMT figures are the coded field `C` only. The container (03-container-and-records.md) adds the body length, the decoded length and the dictionary ID, which do the job of QR's mode indicator and count field.
 
 ### 6.12.1 Codec 1: `0123456789`
 
@@ -457,7 +457,7 @@ Fields: `01100011010 10100110010 10100011000 11110111010 01010010111 00111011000
 
 `C` = `63 54 CA 8C 7B A5 2E 76 23 D2 A0 46 90 24 E6 98` (16 bytes, 128 bits). QR alphanumeric: 4 + 9 + 127 = 140 bits.
 
-Codec 3 with model 0 also gives 16 bytes; by the tie rule of 6.3 the encoder picks codec 2.
+Codec 3 with model 0 also gives 16 bytes, but its container also carries a dictionary ID, so it is one byte longer and the encoder picks codec 2 (6.12.5).
 
 ### 6.12.3 Codec 3: `https://github.com/needmoretruth/nmtcode`
 
@@ -501,14 +501,16 @@ QR: byte mode with UTF-8 is 4 + 8 + 192 = 204 bits (216 with a UTF-8 ECI designa
 
 ### 6.12.5 Candidate sizes and the selection rule
 
-`N` in bytes for each codec on the four strings. The brotli column is informative: it comes from one brotli implementation at quality 11, and other encoders give other sizes.
+For each codec: `Lc` / the whole container in bytes (6.3 rule 2), for a single-record container with content type 1. The brotli column is informative: it comes from one brotli implementation at quality 11, and other encoders give other sizes.
 
 | Content | 0 stored | 1 | 2 | 3 (model 0) | 4 | 5 (brotli) | Chosen |
 |---|---:|---:|---:|---:|---:|---:|---|
-| `0123456789` | 10 | 5 | 7 | 9 | 9 | 14 | 1 |
-| `HTTPS://EXAMPLE.COM/ABC` | 23 | — | 16 | 16 | 21 | 27 | 2 (tie with 3) |
-| `https://github.com/needmoretruth/nmtcode` | 40 | — | — | 19 | 36 | 40 | 3 |
-| `안녕하세요 NMT Code` | 24 | — | — | 35 | 18 | 28 | 4 |
+| `0123456789` | 10 / 17 | 5 / 13 | 7 / 15 | 9 / 18 | 9 / 17 | 14 / 23 | 1 |
+| `HTTPS://EXAMPLE.COM/ABC` | 23 / 30 | — | 16 / 24 | 16 / 25 | 21 / 29 | 27 / 36 | 2 |
+| `https://github.com/needmoretruth/nmtcode` | 40 / 47 | — | — | 19 / 28 | 36 / 44 | 40 / 49 | 3 |
+| `안녕하세요 NMT Code` | 24 / 31 | — | — | 35 / 44 | 18 / 26 | 28 / 37 | 4 |
+
+A container is 7 bytes plus `Lc` for codec 0, 8 bytes plus `Lc` for codecs 1, 2 and 4 (decoded length), and 9 bytes plus `Lc` for codecs 3 and 5 (dictionary ID and decoded length), while every field stays below 128.
 
 ## 6.13 Parameters tunable in 0.x
 
