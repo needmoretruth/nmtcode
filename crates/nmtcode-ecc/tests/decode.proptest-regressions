@@ -1,0 +1,9 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 082becaa56c6580331a39ba74386335b8ab551db1d960453636a71375a95bb6f # shrinks to (n, parity, message) = (3, 2, [1]), seed = 0
+cc b9e4f519872b412d9c876d2219436e083a66599dbc8bfc32138c699fad8bb91d # shrinks to (codeword, received, parity, erasures) = ([4, 87, 157, 58, 15, 162, 150, 184, 111, 232, 5, 199, 72, 164, 113, 66, 117, 166, 95, 93, 140, 53, 81, 6, 35, 82, 179, 24, 83, 185, 57, 54, 249, 241, 70], [4, 87, 157, 58, 14, 162, 150, 184, 111, 244, 5, 199, 72, 164, 144, 202, 117, 166, 95, 93, 140, 53, 81, 6, 35, 82, 179, 24, 83, 185, 57, 54, 249, 241, 70], 10, [])
+cc 1af1cc86434fb8ccd4510770db8a3e7cfaaf03cd85f3f06a7798158f67fedd22 # shrinks to (n, parity, message) = (173, 48, [0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 115, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, 219, 76, 231, 19, 73, 113, 153, 45, 239, 130, 190, 26, 117, 169, 186, 84, 231, 155, 112, 244, 43, 123, 88, 190, 112, 92, 182, 129, 150, 90, 97, 255, 206, 108, 103, 60, 254, 110, 16, 115, 90, 153, 56, 132, 211, 255, 43, 60, 246, 30, 83, 233, 132, 191, 69, 129, 89, 85]), seed = 16560081703974561097

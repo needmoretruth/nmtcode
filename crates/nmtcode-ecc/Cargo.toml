@@ -12,5 +12,8 @@ categories.workspace = true
 
 [dependencies]
 
+[dev-dependencies]
+proptest = { workspace = true }
+
 [lints]
 workspace = true

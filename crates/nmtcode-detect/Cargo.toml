@@ -14,5 +14,9 @@ categories.workspace = true
 nmtcode-core = { workspace = true }
 png = { workspace = true }
 
+[dev-dependencies]
+nmtcode-render = { workspace = true }
+proptest = { workspace = true }
+
 [lints]
 workspace = true

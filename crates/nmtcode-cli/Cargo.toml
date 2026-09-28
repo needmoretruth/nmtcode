@@ -13,12 +13,17 @@ categories.workspace = true
 [[bin]]
 name = "nmtcode"
 path = "src/main.rs"
+# The library crate `nmtcode` has the same name; its documentation takes the name.
+doc = false
 
 [dependencies]
 nmtcode = { workspace = true }
 nmtcode-core = { workspace = true }
 nmtcode-render = { workspace = true }
 nmtcode-detect = { workspace = true }
+
+[dev-dependencies]
+nmtcode-symbol = { workspace = true }
 
 [lints]
 workspace = true

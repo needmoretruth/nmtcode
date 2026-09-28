@@ -252,6 +252,7 @@ dependencies = [
  "nmtcode-core",
  "nmtcode-detect",
  "nmtcode-render",
+ "nmtcode-symbol",
 ]
 
 [[package]]
@@ -259,6 +260,7 @@ name = "nmtcode-core"
 version = "0.0.1"
 dependencies = [
  "crc",
+ "proptest",
 ]
 
 [[package]]
@@ -266,12 +268,17 @@ name = "nmtcode-detect"
 version = "0.0.1"
 dependencies = [
  "nmtcode-core",
+ "nmtcode-render",
  "png",
+ "proptest",
 ]
 
 [[package]]
 name = "nmtcode-ecc"
 version = "0.0.1"
+dependencies = [
+ "proptest",
+]
 
 [[package]]
 name = "nmtcode-payload"
@@ -289,6 +296,7 @@ version = "0.0.1"
 dependencies = [
  "nmtcode-core",
  "png",
+ "proptest",
  "qrcode",
 ]
 
@@ -297,6 +305,7 @@ name = "nmtcode-symbol"
 version = "0.0.1"
 dependencies = [
  "nmtcode-core",
+ "proptest",
 ]
 
 [[package]]
