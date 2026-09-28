@@ -1,0 +1,24 @@
+[package]
+name = "nmtcode-cli"
+description = "Command-line tool for NMT Code: make a symbol as PNG or SVG, and read one back."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "nmtcode"
+path = "src/main.rs"
+
+[dependencies]
+nmtcode = { workspace = true }
+nmtcode-core = { workspace = true }
+nmtcode-render = { workspace = true }
+nmtcode-detect = { workspace = true }
+
+[lints]
+workspace = true

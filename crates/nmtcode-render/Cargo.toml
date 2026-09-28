@@ -1,0 +1,19 @@
+[package]
+name = "nmtcode-render"
+description = "PNG and SVG output of NMT Code symbols, with the optional bootstrap QR Code."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+nmtcode-core = { workspace = true }
+png = { workspace = true }
+qrcode = { workspace = true }
+
+[lints]
+workspace = true

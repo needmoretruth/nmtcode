@@ -1,0 +1,23 @@
+[package]
+name = "nmtcode"
+description = "NMT Code: a two-dimensional code that holds more than a QR Code of the same area. Encode content to a symbol and decode it back."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+nmtcode-core = { workspace = true }
+nmtcode-ecc = { workspace = true }
+nmtcode-payload = { workspace = true }
+nmtcode-symbol = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[lints]
+workspace = true

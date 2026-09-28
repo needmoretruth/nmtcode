@@ -1,0 +1,27 @@
+[package]
+name = "nmtcode-payload"
+description = "Payload codecs of NMT Code: stored, digits, upper-case alphanumeric, token table with a short-text model, Hangul packing and brotli."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["brotli"]
+# Codec 5. Without it, a decoder reports codec 5 as unsupported.
+brotli = ["dep:brotli", "dep:brotli-decompressor"]
+
+[dependencies]
+brotli = { workspace = true, optional = true }
+brotli-decompressor = { workspace = true, optional = true }
+
+[dev-dependencies]
+sha2 = { workspace = true }
+proptest = { workspace = true }
+
+[lints]
+workspace = true

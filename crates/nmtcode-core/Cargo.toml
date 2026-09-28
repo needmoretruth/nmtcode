@@ -1,0 +1,17 @@
+[package]
+name = "nmtcode-core"
+description = "Common types of NMT Code: module grid, format word, container and records, CRC-32C and the reader errors."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dependencies]
+crc = { workspace = true }
+
+[lints]
+workspace = true

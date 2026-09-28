@@ -1,0 +1,55 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+# One number for every crate. Never 1.0.0 or above without an explicit decision.
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.98.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/needmoretruth/nmtcode"
+homepage = "https://github.com/needmoretruth/nmtcode"
+keywords = ["2d-barcode", "qr-code", "optical-code", "air-gap"]
+categories = ["encoding", "multimedia::images"]
+
+[workspace.dependencies]
+nmtcode-core = { path = "crates/nmtcode-core", version = "=0.0.1" }
+nmtcode-ecc = { path = "crates/nmtcode-ecc", version = "=0.0.1" }
+nmtcode-payload = { path = "crates/nmtcode-payload", version = "=0.0.1" }
+nmtcode-symbol = { path = "crates/nmtcode-symbol", version = "=0.0.1" }
+nmtcode-render = { path = "crates/nmtcode-render", version = "=0.0.1" }
+nmtcode-detect = { path = "crates/nmtcode-detect", version = "=0.0.1" }
+nmtcode = { path = "crates/nmtcode", version = "=0.0.1" }
+
+# Third-party crates. Only MIT, Apache-2.0, BSD, ISC, Unlicense or CC0 licences.
+brotli = { version = "=9.0.0", default-features = false }
+brotli-decompressor = { version = "=6.0.1", default-features = false }
+crc = "=3.4.0"
+png = "=0.18.1"
+qrcode = { version = "=0.14.1", default-features = false }
+sha2 = { version = "=0.11.0", default-features = false }
+proptest = "=1.11.0"
+
+# Project-wide rule: this project's own code never uses `unsafe`.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+[profile.dev]
+opt-level = 1
+
+# Property tests and the Reed-Solomon decoder are slow without optimisation.
+[profile.test]
+opt-level = 2
