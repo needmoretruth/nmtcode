@@ -155,7 +155,10 @@ proptest! {
         if let Some(coded) = codec5::encode_with(&content, quality, window) {
             prop_assert_eq!(decode(5, 0, len32(&content), &coded, MAX_CONTENT_LEN_V0), Ok(content));
         } else {
-            prop_assert!(!cfg!(feature = "brotli"));
+            // 6.10 rule 1: no stream declares a window above the bound of its length.
+            prop_assert!(
+                !cfg!(feature = "brotli") || window > codec5::max_window_bits(len32(&content))
+            );
         }
     }
 }

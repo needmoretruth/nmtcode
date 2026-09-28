@@ -2,9 +2,9 @@
 
 use nmtcode_core::{MAX_SIDE, MIN_SIDE, ModuleGrid, is_valid_side};
 
-use crate::LumaImage;
 use crate::finder::{self, BL, BR, Finder, TL, TR, Transform, corner, finder_module};
 use crate::num::{ceil_u32, count_f64, floor_i32, floor_u32, round_u8, u64_f64};
+use crate::{Detection, LumaImage};
 
 /// At most this many finder candidates are grouped; grouping is quadratic in their number.
 const MAX_FINDERS: usize = 2048;
@@ -65,11 +65,61 @@ fn global_threshold(image: &LumaImage) -> Option<f64> {
     (light - dark >= 20.0).then(|| f64::midpoint(dark, light))
 }
 
-/// All symbols in `image`.
-pub(crate) fn find(image: &LumaImage) -> Vec<ModuleGrid> {
+/// A symbol found in the image: its grid in symbol orientation and its rectangle in the image,
+/// (left, top, right, bottom) in pixels.
+struct Found {
+    grid: ModuleGrid,
+    bounds: [f64; 4],
+}
+
+/// Every symbol in `image`, dark on light (chapter 5, 5.11), and the number of nested ones.
+pub(crate) fn find(image: &LumaImage) -> Detection {
     if !image.is_usable() {
-        return Vec::new();
+        return Detection::default();
     }
+    let upright = find_upright(image);
+    if !upright.is_empty() {
+        return split_nested(upright, false);
+    }
+    // 1.4 and 5.11: a reader MAY try the inverted image. It is tried only when the image as
+    // captured holds no symbol, so a dark-on-light symbol costs no second pass.
+    let inverted = LumaImage {
+        width: image.width,
+        height: image.height,
+        pixels: image.pixels.iter().map(|&v| u8::MAX - v).collect(),
+    };
+    split_nested(find_upright(&inverted), true)
+}
+
+/// The nesting rule of 5.11: a symbol whose rectangle lies inside another symbol's rectangle,
+/// and that other symbol, are both left out and counted.
+fn split_nested(found: Vec<Found>, inverted: bool) -> Detection {
+    let inside =
+        |a: &[f64; 4], b: &[f64; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
+    let mut nested = vec![false; found.len()];
+    for (i, a) in found.iter().enumerate() {
+        for (j, b) in found.iter().enumerate() {
+            if i != j && inside(&a.bounds, &b.bounds) {
+                if let Some(flag) = nested.get_mut(i) {
+                    *flag = true;
+                }
+                if let Some(flag) = nested.get_mut(j) {
+                    *flag = true;
+                }
+            }
+        }
+    }
+    let count = nested.iter().filter(|&&n| n).count();
+    let symbols = found
+        .into_iter()
+        .zip(nested)
+        .filter_map(|(f, is_nested)| (!is_nested).then_some(f.grid))
+        .collect();
+    Detection { symbols, nested: count, inverted }
+}
+
+/// Every symbol in `image` as captured, dark modules darker than light ones.
+fn find_upright(image: &LumaImage) -> Vec<Found> {
     let Some(threshold) = global_threshold(image) else {
         return Vec::new();
     };
@@ -90,13 +140,13 @@ pub(crate) fn find(image: &LumaImage) -> Vec<ModuleGrid> {
                 if !anchor.has(kind, t) {
                     continue;
                 }
-                if let Some((grid, members)) = try_symbol(image, &finders, &used, k, kind, t) {
+                if let Some((found, members)) = try_symbol(image, &finders, &used, k, kind, t) {
                     for m in members.into_iter().flatten() {
                         if let Some(u) = used.get_mut(m) {
                             *u = true;
                         }
                     }
-                    out.push(grid);
+                    out.push(found);
                     break 'transforms;
                 }
             }
@@ -180,7 +230,7 @@ fn slot(c: (u8, u8)) -> usize {
 }
 
 /// Tries to build a symbol with finder `k` as `kind` seen through transform `t`. Returns the
-/// grid in symbol orientation and the finders used, by image corner.
+/// symbol and the finders used, by image corner.
 fn try_symbol(
     image: &LumaImage,
     finders: &[Finder],
@@ -188,7 +238,7 @@ fn try_symbol(
     anchor: usize,
     kind: usize,
     transform: Transform,
-) -> Option<(ModuleGrid, [Option<usize>; 4])> {
+) -> Option<(Found, [Option<usize>; 4])> {
     let at_anchor = transform.corner(corner(kind));
     let at_side = (1 - at_anchor.0, at_anchor.1);
     let at_end = (at_anchor.0, 1 - at_anchor.1);
@@ -218,8 +268,8 @@ fn try_symbol(
     if corners.iter().flatten().count() < 3 {
         return None;
     }
-    let grid = measure_and_sample(image, finders, &corners, transform)?;
-    Some((grid, corners))
+    let found = measure_and_sample(image, finders, &corners, transform)?;
+    Some((found, corners))
 }
 
 fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
@@ -227,8 +277,16 @@ fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
     (n > 0).then(|| sum / count_f64(n))
 }
 
+/// The size tolerance of 5.11: a side of `n` modules agrees with the finder estimate `estimate`
+/// when they differ by at most max(4, n / 10) modules.
+pub(crate) fn within_tolerance(n: u32, estimate: f64) -> bool {
+    let n = f64::from(n);
+    (n - estimate).abs() <= (n / 10.0).max(4.0)
+}
+
 /// Chooses the number of modules along one side: among the multiples of 4 from 20 to 4108
-/// within ±12% of `(hi − lo) / module`, the one whose grid lines lie closest, on average, to the
+/// that agree with the finder estimate `(hi − lo) / module` within the tolerance of 5.11
+/// ([`within_tolerance`]), the one whose grid lines lie closest, on average, to the
 /// `threshold` crossings found along up to 64 scan lines spread between `cross_lo` and
 /// `cross_hi`. `value(line, p)` reads pixel `p` of scan line `line`; `lo` and `hi` are the
 /// symbol's outer edges along the side. `None` when no candidate fits within
@@ -247,8 +305,9 @@ fn count_modules(
         return None;
     }
     let rough = span / module;
-    let first = ceil_u32(rough * 0.88).max(MIN_SIDE).next_multiple_of(4);
-    let last = floor_u32(rough * 1.12).min(MAX_SIDE);
+    // Every n within the tolerance lies between rough / 1.1 − 4 and rough / 0.9 + 4.
+    let first = ceil_u32(rough / 1.1 - 4.0).max(MIN_SIDE).next_multiple_of(4);
+    let last = floor_u32(rough / 0.9 + 4.0).min(MAX_SIDE);
     if first > last {
         return None;
     }
@@ -277,7 +336,7 @@ fn count_modules(
         return None;
     }
     let mut best: Option<(u32, f64)> = None;
-    for n in (first..=last).step_by(4) {
+    for n in (first..=last).step_by(4).filter(|&n| within_tolerance(n, rough)) {
         let nf = f64::from(n);
         let error: f64 = positions
             .iter()
@@ -301,7 +360,7 @@ fn measure_and_sample(
     finders: &[Finder],
     corners: &[Option<usize>; 4],
     t: Transform,
-) -> Option<ModuleGrid> {
+) -> Option<Found> {
     let at = |s: usize| corners.get(s).copied().flatten().and_then(|i| finders.get(i));
     let present = || corners.iter().flatten().filter_map(|&i| finders.get(i));
     let left = mean([at(0), at(2)].into_iter().flatten().map(|f| f.left))?;
@@ -407,7 +466,7 @@ fn measure_and_sample(
             grid.set(u, v, f64::from(s) < thr);
         }
     }
-    (finders_intact(&grid) >= 3).then_some(grid)
+    (finders_intact(&grid) >= 3).then_some(Found { grid, bounds: [left, top, right, bottom] })
 }
 
 /// Number of the four finders (5.3) that, with their separators (5.4), are exact in `grid`.
@@ -434,4 +493,20 @@ fn finders_intact(grid: &ModuleGrid) -> usize {
             finder_ok && separator_ok
         })
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::within_tolerance;
+
+    #[test]
+    fn size_tolerance_of_5_11() {
+        // max(4, W / 10): 4 modules up to W = 40, then 10%.
+        assert!(within_tolerance(20, 24.0) && within_tolerance(20, 16.0));
+        assert!(!within_tolerance(20, 24.1) && !within_tolerance(20, 15.9));
+        assert!(within_tolerance(40, 44.0) && !within_tolerance(40, 44.1));
+        assert!(within_tolerance(100, 110.0) && !within_tolerance(100, 110.1));
+        assert!(within_tolerance(100, 90.0) && !within_tolerance(100, 89.9));
+        assert!(within_tolerance(4108, 3697.25) && !within_tolerance(4108, 3697.15));
+    }
 }

@@ -3,7 +3,7 @@
 use nmtcode_symbol::{
     FORMAT_COPY_A, FormatCopy, Layout, ModuleClass, ModuleGrid, SymbolCounts, SymbolError,
     WHITENING_SEED, Whitening, format_module, format_positions, read_format_copies,
-    reference_mark_lines,
+    reference_mark_lines, write_format_copies,
 };
 
 /// Renders the classes of `layout` in the notation of 5.12: `#` dark function module, `o` light
@@ -180,9 +180,9 @@ fn function_module_map_of_5_12() {
         "..............bbbbbb",
         "------.....bbb------",
         "#####-....bbbb-#####",
-        "#####-....bbbb-#oo##",
-        "#####-....bbbb-#o#o#",
         "#####-....bbbb-##oo#",
+        "#####-....bbbb-#ooo#",
+        "#####-....bbbb-#ooo#",
         "#####-....bbbb-#####",
     ];
     let layout = Layout::new(20, 20).unwrap();
@@ -244,7 +244,7 @@ fn placement_and_whitening_of_5_12() {
     for (i, byte) in stream.iter_mut().enumerate().skip(4) {
         *byte = u8::try_from(i * 37 % 256).unwrap();
     }
-    let grid = layout.draw(0, &stream).unwrap();
+    let grid = layout.draw_copies([0, 0], &stream).unwrap();
 
     for (k, p, codeword, b, w, module) in table {
         assert_eq!(placement[k], p, "P[{k}]");
@@ -268,7 +268,7 @@ fn placement_and_whitening_of_5_12() {
     assert_eq!(grid.get(18, 6), Some(true));
     assert_eq!(grid.get(19, 6), Some(false));
     // Whatever the stream, the remainder modules are w[160] and w[161].
-    let other = layout.draw(0, &[0xFF; 20]).unwrap();
+    let other = layout.draw_copies([0, 0], &[0xFF; 20]).unwrap();
     assert_eq!((other.get(18, 6), other.get(19, 6)), (Some(true), Some(false)));
 }
 
@@ -336,41 +336,45 @@ fn format_positions_of_5_5() {
     assert_eq!(layout.module_class(36 - 10, 24 - 6), Some(ModuleClass::Data));
 }
 
-/// The module map of 2.8: the sent word F = 0x51F7680D3ACD on both copies of a 20 × 20 symbol.
+/// The module map of 2.8: `F_A` = 0x51F7680D3ACD on copy A and `F_B` = 0x3FCE35FD8A41 on copy B of
+/// a 20 × 20 symbol, with the finder modules drawn as `F` as chapter 2 prints them.
 #[test]
 fn format_bits_of_2_8() {
-    const F: u64 = 0x51F7_680D_3ACD;
+    const F_A: u64 = 0x51F7_680D_3ACD;
+    const F_B: u64 = 0x3FCE_35FD_8A41;
     let expected = [
-        "#####-#o#o....-#####",
-        "#oo##-oo##....-##oo#",
-        "#oo##-###o....-#####",
-        "#####-###o....-##oo#",
-        "#####-##o#....-#####",
+        "FFFFF-#o#o....-FFFFF",
+        "FFFFF-oo##....-FFFFF",
+        "FFFFF-###o....-FFFFF",
+        "FFFFF-###o....-FFFFF",
+        "FFFFF-##o#....-FFFFF",
         "------ooo.....------",
         "o#o###..............",
         "o#oo##..............",
         "oo##oo..............",
         "o##oo#..............",
-        "..............#oo##o",
-        "..............oo##oo",
-        "..............##oo#o",
-        "..............###o#o",
-        "------.....ooo------",
-        "#####-....#o##-#####",
-        "#####-....o###-#oo##",
-        "#####-....o###-#o#o#",
-        "#####-....##oo-##oo#",
-        "#####-....o#o#-#####",
+        "..............#ooo##",
+        "..............oo#oo#",
+        "..............o#oo##",
+        "..............oo####",
+        "------.....#o#------",
+        "FFFFF-....o##o-FFFFF",
+        "FFFFF-....oo##-FFFFF",
+        "FFFFF-....#oo#-FFFFF",
+        "FFFFF-....####-FFFFF",
+        "FFFFF-....###o-FFFFF",
     ];
-    assert_eq!(0x0004_0143_9567 ^ 0x51F3_694E_AFAA, F);
+    assert_eq!(0x0004_0143_9567 ^ 0x51F3_694E_AFAA, F_A);
+    assert_eq!(0x0004_0143_9567 ^ 0x3FCA_34BE_1F26, F_B);
     let layout = Layout::new(20, 20).unwrap();
-    let grid = layout.draw(F, &[0; 20]).unwrap();
+    let grid = layout.draw_copies([F_A, F_B], &[0; 20]).unwrap();
     let map: Vec<String> = (0..20)
         .map(|y| {
             (0..20)
                 .map(|x| match layout.module_class(x, y).unwrap() {
                     ModuleClass::Separator => '-',
                     ModuleClass::Data => '.',
+                    ModuleClass::Finder => 'F',
                     _ => {
                         if grid.get(x, y).unwrap() {
                             '#'
@@ -383,68 +387,77 @@ fn format_bits_of_2_8() {
         })
         .collect();
     assert_eq!(map, expected);
-    assert_eq!(read_format_copies(&grid).unwrap(), [F, F]);
-    // Bit 0 and bit 46 are 1: A[0], B[0], A[46] and B[46] are dark.
-    for (x, y) in [(6, 0), (13, 19), (5, 9), (14, 10)] {
+    assert_eq!(read_format_copies(&grid).unwrap(), [F_A, F_B]);
+    // Bit 0 is 1 in F_A and 0 in F_B; bit 46 is 1 in both.
+    assert_eq!(grid.get(6, 0), Some(true));
+    assert_eq!(grid.get(13, 19), Some(false));
+    for (x, y) in [(5, 9), (14, 10)] {
         assert_eq!(grid.get(x, y), Some(true));
     }
 }
 
-/// The corrupted copy A of 2.8 reads back as the corrupted word, copy B as F.
+/// The corrupted copy A of 2.8 reads back as the corrupted word, copy B as `F_B`.
 #[test]
 fn corrupted_copy_of_2_8_reads_raw() {
     let layout = Layout::new(20, 20).unwrap();
-    let mut grid = layout.draw(0x51F7_680D_3ACD, &[0; 20]).unwrap();
+    let mut grid = layout.draw_copies([0x51F7_680D_3ACD, 0x3FCE_35FD_8A41], &[0; 20]).unwrap();
     for i in [3usize, 17, 30] {
         let (x, y) = format_module(FormatCopy::A, i, 20, 20).unwrap();
         grid.toggle(x, y);
     }
-    assert_eq!(read_format_copies(&grid).unwrap(), [0x59F7_480C_3ACD, 0x51F7_680D_3ACD]);
+    assert_eq!(read_format_copies(&grid).unwrap(), [0x59F7_480C_3ACD, 0x3FCE_35FD_8A41]);
 }
 
-const A2_STREAM: [u8; 42] = [
-    0x03, 0x16, 0x00, 0x28, 0x02, 0xDE, 0xA7, 0x40, 0xBA, 0x96, 0xDC, 0xEE, 0xAA, 0xEE, 0x6B, 0xEF,
-    0xDF, 0x35, 0x76, 0x47, 0xAE, 0xBA, 0xF7, 0x91, 0x33, 0x56, 0xF1, 0x6E, 0xEC, 0x11, 0xEC, 0x11,
-    0xEC, 0x11, 0x5F, 0xBF, 0xC3, 0xA7, 0xFC, 0x87, 0x2F, 0xA6,
+const A2_STREAM: [u8; 40] = [
+    0x03, 0x00, 0x16, 0x00, 0x28, 0x02, 0xDE, 0xA7, 0x40, 0xBA, 0x96, 0xDC, 0xEE, 0xAA, 0xEE, 0x6B,
+    0xEF, 0xDF, 0x35, 0x76, 0x47, 0xAE, 0xBA, 0xF7, 0x91, 0x13, 0x7D, 0xCF, 0xC4, 0xEC, 0x11, 0xEC,
+    0x11, 0xEC, 0x83, 0x8C, 0xFB, 0x28, 0xC9, 0xED,
 ];
-const A2_FORMAT: u64 = 0x51FB_6B49_7725;
-const A2_ROWS: [u32; 24] = [
-    0xFA_A49F, 0x98_D899, 0x9B_F7DF, 0xF9_8619, 0xFB_4FDF, 0x01_F7C0, 0x43_681A, 0xB4_CBA4,
-    0x3B_F673, 0x77_26D8, 0x0D_0065, 0x8B_BA54, 0x9F_B0C6, 0x39_2308, 0xBA_A2AE, 0x92_75DC,
-    0x43_FB2D, 0x67_1182, 0x03_4D80, 0xF8_FADF, 0xFB_9D93, 0xF9_B7D5, 0xF9_9F19, 0xFB_8D5F,
+/// A.2.5: the codeword U and the sent words `F_A` and `F_B`.
+const A2_CODEWORD: u64 = 0x0004_0304_66EB;
+const A2_FORMAT: [u64; 2] = [0x51F7_6A4A_C941, 0x3FCE_37BA_79CD];
+const A2_ROWS: [u32; 28] = [
+    0xF_A89F, 0x9_8CD9, 0x9_BA9F, 0xF_BA19, 0xF_B4DF, 0x0_1200, 0x7_12C2, 0xA_97CB, 0x4_331F,
+    0x1_54B3, 0x1_A547, 0xB_A4AD, 0x9_C8BC, 0x1_8AC9, 0x8_C65D, 0xD_4A79, 0x0_B1B4, 0xF_0EF1,
+    0x8_5C2D, 0x6_7E07, 0x3_D4F4, 0x7_433B, 0x0_3FC0, 0xF_959F, 0xF_B4D9, 0xF_8251, 0xF_BFD1,
+    0xF_BF9F,
 ];
-const A2_PICTURE: [&str; 24] = [
-    "#####.#.#.#..#..#..#####",
-    "#..##...##.##...#..##..#",
-    "#..##.######.#####.#####",
-    "#####..##....##....##..#",
-    "#####.##.#..######.#####",
-    ".......#####.#####......",
-    ".#....##.##.#......##.#.",
-    "#.##.#..##..#.###.#..#..",
-    "..###.######.##..###..##",
-    ".###.###..#..##.##.##...",
-    "....##.#.........##..#.#",
-    "#...#.###.###.#..#.#.#..",
-    "#..######.##....##...##.",
-    "..###..#..#...##....#...",
-    "#.###.#.#.#...#.#.#.###.",
-    "#..#..#..###.#.###.###..",
-    ".#....#######.##..#.##.#",
-    ".##..###...#...##.....#.",
-    "......##.#..##.##.......",
-    "#####...#####.#.##.#####",
-    "#####.###..###.##..#..##",
-    "#####..##.##.#####.#.#.#",
-    "#####..##..#####...##..#",
-    "#####.###...##.#.#.#####",
+const A2_PICTURE: [&str; 28] = [
+    "#####.#.#...#..#####",
+    "#..##...##..##.##..#",
+    "#..##.###.#.#..#####",
+    "#####.###.#....##..#",
+    "#####.##.#..##.#####",
+    ".......#..#.........",
+    ".###...#..#.##....#.",
+    "#.#.#..#.#####..#.##",
+    ".#....##..##...#####",
+    "...#.#.#.#..#.##..##",
+    "...##.#..#.#.#...###",
+    "#.###.#..#..#.#.##.#",
+    "#..###..#...#.####..",
+    "...##...#.#.##..#..#",
+    "#...##...##..#.###.#",
+    "##.#.#..#.#..####..#",
+    "....#.##...##.##.#..",
+    "####....###.####...#",
+    "#....#.###....#.##.#",
+    ".##..######......###",
+    "..####.#.#..####.#..",
+    ".###.#....##..###.##",
+    "......########......",
+    "#####..#.#.##..#####",
+    "#####.##.#..##.##..#",
+    "#####.....#..#.#...#",
+    "#####.########.#...#",
+    "#####.#######..#####",
 ];
 
 fn a2_matrix() -> ModuleGrid {
-    let mut grid = ModuleGrid::new(24, 24).unwrap();
+    let mut grid = ModuleGrid::new(20, 28).unwrap();
     for (y, row) in (0..).zip(A2_ROWS) {
-        for x in 0..24 {
-            grid.set(x, y, row >> (23 - x) & 1 == 1);
+        for x in 0..20 {
+            grid.set(x, y, row >> (19 - x) & 1 == 1);
         }
     }
     grid
@@ -459,41 +472,45 @@ fn annex_a2_7_two_forms_agree() {
 /// A.2.7 reproduced from the format word of A.2.5 and the codeword stream of A.2.4.
 #[test]
 fn annex_a2_7_matrix_is_reproduced() {
-    let layout = Layout::new(24, 24).unwrap();
+    let layout = Layout::new(20, 28).unwrap();
     assert_eq!(
         (layout.data_module_count(), layout.codeword_count(), layout.remainder_bits()),
-        (338, 42, 2)
+        (322, 40, 2)
     );
-    assert_eq!(0x0008_0207_D88F ^ 0x51F3_694E_AFAA, A2_FORMAT);
-    let grid = layout.draw(A2_FORMAT, &A2_STREAM).unwrap();
+    assert_eq!(A2_CODEWORD ^ 0x51F3_694E_AFAA, A2_FORMAT[0]);
+    assert_eq!(A2_CODEWORD ^ 0x3FCA_34BE_1F26, A2_FORMAT[1]);
+    let grid = layout.draw_copies(A2_FORMAT, &A2_STREAM).unwrap();
     let expected = a2_matrix();
     assert_eq!(grid.to_rows(), expected.to_rows());
-    assert_eq!(read_format_copies(&expected).unwrap(), [A2_FORMAT; 2]);
+    assert_eq!(read_format_copies(&expected).unwrap(), A2_FORMAT);
     assert_eq!(layout.read_stream(&expected).unwrap(), A2_STREAM);
 
     // A.2.6: the remainder modules and their whitening bits.
     let placement: Vec<_> = layout.placement().collect();
-    assert_eq!(placement[336..], [(22, 6), (23, 6)]);
-    let w: Vec<bool> = Whitening::new().take(338).collect();
-    assert_eq!((w[336], w[337]), (true, false));
-    assert_eq!((expected.get(22, 6), expected.get(23, 6)), (Some(true), Some(false)));
+    assert_eq!(placement[320..], [(18, 6), (19, 6)]);
+    let w: Vec<bool> = Whitening::new().take(322).collect();
+    assert_eq!((w[320], w[321]), (true, false));
+    assert_eq!((expected.get(18, 6), expected.get(19, 6)), (Some(true), Some(false)));
 }
 
 /// The function and format modules of A.2.7 alone, independent of the data modules.
 #[test]
 fn annex_a2_7_function_and_format_modules() {
-    let layout = Layout::new(24, 24).unwrap();
+    let layout = Layout::new(20, 28).unwrap();
     let expected = a2_matrix();
-    let [copy_a, copy_b] = format_positions(24, 24).unwrap();
-    for y in 0..24 {
-        for x in 0..24 {
+    let [copy_a, copy_b] = format_positions(20, 28).unwrap();
+    for y in 0..28 {
+        for x in 0..20 {
             match layout.module_class(x, y).unwrap() {
                 ModuleClass::Data => {}
                 ModuleClass::Format => {
-                    let i = copy_a.iter().chain(&copy_b).position(|&p| p == (x, y)).unwrap() % 47;
+                    let (copy, i) = match copy_a.iter().position(|&p| p == (x, y)) {
+                        Some(i) => (0, i),
+                        None => (1, copy_b.iter().position(|&p| p == (x, y)).unwrap()),
+                    };
                     assert_eq!(
                         expected.get(x, y),
-                        Some(A2_FORMAT >> (46 - i) & 1 == 1),
+                        Some(A2_FORMAT[copy] >> (46 - i) & 1 == 1),
                         "({x}, {y})"
                     );
                 }
@@ -522,11 +539,23 @@ fn draw_and_read_reject_bad_input() {
     let n = layout.codeword_count();
     let stream = vec![0u8; n];
     assert_eq!(
-        layout.draw(0, &stream[1..]).err(),
+        layout.draw_copies([0, 0], &stream[1..]).err(),
         Some(SymbolError::StreamLength { expected: n, actual: n - 1 })
     );
-    assert_eq!(layout.draw(1 << 47, &stream).err(), Some(SymbolError::FormatCodewordTooWide));
-    assert!(layout.draw((1 << 47) - 1, &stream).is_ok());
+    assert_eq!(
+        layout.draw_copies([1 << 47, 0], &stream).err(),
+        Some(SymbolError::FormatCodewordTooWide)
+    );
+    assert_eq!(
+        layout.draw_copies([0, 1 << 47], &stream).err(),
+        Some(SymbolError::FormatCodewordTooWide)
+    );
+    assert!(layout.draw_copies([(1 << 47) - 1, (1 << 47) - 1], &stream).is_ok());
+    let mut grid = ModuleGrid::new(20, 24).unwrap();
+    assert_eq!(
+        write_format_copies(&mut grid, [0, 1 << 47]).err(),
+        Some(SymbolError::FormatCodewordTooWide)
+    );
 
     let other = ModuleGrid::new(24, 20).unwrap();
     assert_eq!(

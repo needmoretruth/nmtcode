@@ -54,7 +54,9 @@ Drawing:
   --dpi N              pixel density written into the image; with print it also sets the
                        module size (print default: 300)
   --quiet-zone N       light margin in modules, at least 2 (default 2)
-  --no-qr              leave out the QR Code beside the symbol that links to NMT Code
+  --qr                 add a QR Code beside the symbol that links to NMT Code (the default
+                       with print)
+  --no-qr              leave out that QR Code
 
 QR Code is a registered trademark of DENSO WAVE INCORPORATED.
 ";
@@ -84,20 +86,23 @@ pub const SEE_HELP: &str = "Run 'nmtcode --help' for usage.";
 /// A short English message for each reader error of the specification (9.8).
 pub const fn spec_error(error: SpecError) -> &'static str {
     match error {
+        SpecError::NestedSymbol => "one symbol lies inside another, so neither is shown",
         SpecError::FormatUnreadable => "the format information of the symbol cannot be read",
+        SpecError::FormatConflict => "the two copies of the format information disagree",
         SpecError::FormatVersion => "the symbol uses a newer format; a newer reader is needed",
+        SpecError::SizeLimit => "the symbol is larger than this reader accepts",
         SpecError::TransferUnsupported => {
             "the symbol is one frame of a transfer, which this reader does not support"
         }
         SpecError::EccFailed => "the symbol is too damaged to correct",
-        SpecError::LayerTooSmall => "a layer of the symbol is too small",
+        SpecError::ColourAmbiguous => "the colours of the symbol do not match its colour profile",
         SpecError::LengthField => "the symbol is damaged: its length field is invalid",
         SpecError::CrcMismatch => "the symbol is damaged: its integrity check failed",
         SpecError::ContainerVersion => {
             "the symbol uses a newer container; a newer reader is needed"
         }
         SpecError::TileReservedBits => "the transfer frame has reserved bits set",
-        SpecError::TileColour => "the transfer frame has a colour profile, which is not allowed",
+        SpecError::FormatEcho => "the symbol's content does not match its format information",
         SpecError::ColourFlag => "the symbol claims colour content without a colour profile",
         SpecError::Leb128 => "the symbol has an invalid number field",
         SpecError::CodecEscape => "the symbol has an invalid codec field",
@@ -110,7 +115,6 @@ pub const fn spec_error(error: SpecError) -> &'static str {
         SpecError::TooLarge => "the content is larger than this reader accepts",
         SpecError::Malformed => "the symbol's content cannot be decoded",
         SpecError::RecordList => "the symbol's record list is invalid",
-        SpecError::NoBaseRecord => "the symbol holds no record a black-and-white reader can show",
         SpecError::ActionRule => "the symbol holds a URL in a place that is not allowed",
         SpecError::DigestMismatch => "the symbol's colour content does not match its digest",
         SpecError::ExtensionUnread => {
@@ -160,6 +164,8 @@ pub mod msg {
         "--format png or --format svg is needed to write to standard output";
     /// A quiet zone below 2.
     pub const QUIET_ZONE_TOO_SMALL: &str = "the quiet zone must be at least 2 modules";
+    /// `--qr` with `--no-qr`.
+    pub const QR_AND_NO_QR: &str = "give only one of --qr and --no-qr";
     /// `read` without a path.
     pub const READ_NEEDS_PATH: &str = "give the PNG file to read, or - for standard input";
     /// `read` with more than one path.
@@ -326,9 +332,7 @@ const fn write_error(error: nmtcode_core::WriteError) -> &'static str {
         WriteError::NoRecords => "there is nothing to encode",
         WriteError::ActionRule => "a symbol holds at most one URL, as its first record",
         WriteError::FileNameWithoutTarget => "a file name must be followed by a file",
-        WriteError::ContentTooLarge | WriteError::BodyTooLong => {
-            "the content is larger than 16 MiB"
-        }
+        WriteError::ContentTooLarge | WriteError::BodyTooLong => "the content is larger than 1 MiB",
         WriteError::UnknownCodec(_)
         | WriteError::DictionaryNotAllowed
         | WriteError::DecodedLengthMismatch

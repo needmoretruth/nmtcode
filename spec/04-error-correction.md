@@ -1,13 +1,15 @@
 # NMT Code — 4. Error correction
 
-Specification version 0.1 (draft). Licensed under CC BY 4.0 (see `LICENSE` in this folder).
+© 2026 needmoretruth. Licensed under CC BY 4.0 (see LICENSE).
+
+Specification version 0.2 (draft).
 
 ## 4.1 Scope
 
 This chapter defines the error correction of the data area of the base (black-and-white) layer:
 
 - the Reed-Solomon code (4.2 to 4.4);
-- the four error-correction levels (4.5);
+- the four error-correction levels and the module errors each tolerates (4.5);
 - the algorithm that splits the data area into blocks for any symbol size (4.6, 4.7);
 - the order in which message bytes enter blocks and codewords leave them (4.8);
 - what a decoder must do (4.9);
@@ -91,12 +93,27 @@ A block with P parity bytes corrects up to P/2 byte errors, or up to P byte eras
 
 Every block of a symbol meets the target share: P · 100 ≥ n · q[lvl] for every block length n.
 
+Module errors (informative). The eight bits of a codeword lie on a block of about 2 × 4 neighbouring modules (chapter 5, 5.8), so one wrong module makes a whole codeword wrong. When every module is wrong on its own with probability p, a codeword is wrong with probability 1 − (1 − p)^8, about 8p. The table gives the p at which a symbol fails, meaning at least one block has more than P/2 wrong codewords, with probability 1%. Computed from the binomial distribution with the block splits of 4.6; no erasures.
+
+| Symbol | N | Level 0 | Level 1 | Level 2 | Level 3 |
+|---|---:|---:|---:|---:|---:|
+| 20 × 20 | 20 | 0.29% | 0.56% | 1.27% | 1.71% |
+| 32 × 32 | 98 | 0.47% | 1.13% | 2.27% | 2.93% |
+| 64 × 64 | 468 | 0.53% | 1.34% | 2.55% | 3.25% |
+| 128 × 128 | 1967 | 0.48% | 1.21% | 2.41% | 3.06% |
+| 324 × 324 | 12 843 | 0.40% | 1.10% | 2.22% | 2.89% |
+
+- Level 0 tolerates about 0.5% independent module errors, about half of the 0.9% that its byte share suggests (7.5% / 8). At 1% the expected number of wrong codewords of a 255-byte block already equals P/2.
+- Errors that come in clusters, such as glare or a smudge, fill few codewords, because the codewords are compact blocks. For them the byte shares of the first table apply.
+- QR Code has the same property, since its codewords are also 8-module blocks.
+- The `screen` profile keeps level 0 in this version (chapter 1, 1.5). The module-error rates of real captures decide whether it moves to level 1.
+
 ## 4.6 Block splitting
 
 The input is:
 
 - N, the number of codewords in the data area. Chapter 5 gives the number of data modules D for the symbol; N = floor(D / 8).
-- lvl, the error-correction level (0 to 3): the format word's level for the base layer (chapter 2), `chroma_ecc_level` for the colour layer (chapter 7, 7.8.2).
+- lvl, the error-correction level (0 to 3): the format word's level for the base layer (chapter 2), and level 2 for the colour layer of colour profile 1 (chapter 7, 7.8.2).
 
 The output is:
 
@@ -130,6 +147,7 @@ Properties of the result, for every level lvl and every N ≥ N_min[lvl]:
 - P is even and at least 2.
 - P is computed from the longest block and rounded up to an even number, so every block meets the target share of 4.5. The rounding up makes the actual share higher than the target for small N (for example 18.8% instead of 15% at N = 32, level 0).
 - Every block has at least one message byte. For B = 1 this holds from N_min[lvl] upward. At level 3, N = 3 would leave one message byte but N = 4 would leave none (P = 4), so the minimum is set at 5, above which every N works. For B ≥ 2 every block has at least 128 bytes, P is at most 154 (level 3) and every block keeps at least 50 message bytes.
+- B, s, r and the block lengths depend on N alone, not on the level; only P and K do. Chapter 3 (3.2.2) relies on this: a message read under the wrong level still starts with the same codeword bytes.
 
 Rules:
 
@@ -137,22 +155,22 @@ Rules:
 - A generator and a reader MUST use exactly this algorithm. No other block layout is allowed in format version 0.
 - The data area always uses all N codewords. The generator fills the message to exactly K bytes by the padding rule of chapter 3 (3.8); the container MUST fit in K bytes (chapter 3, 3.2.3).
 
-Smallest symbol at each level. Chapter 5 (5.7) gives D; the smallest container (lead byte, body length, content type, CRC-32C, empty content) is 7 bytes (chapter 3, 3.2).
+Smallest symbol at each level. Chapter 5 (5.7) gives D; the smallest container (lead byte, format echo byte, body length, content type, CRC-32C, empty content) is 8 bytes (chapter 3, 3.2.6). The smallest symbol, 20 × 20, meets N_min at every level.
 
 | Level | Smallest symbol | N | P | K | Largest content of one record, codec 0 |
 |---|---|---|---|---|---|
-| 0 | 20 × 20 | 20 | 4 | 16 | 9 bytes |
-| 1 | 20 × 20 | 20 | 6 | 14 | 7 bytes |
-| 2 | 20 × 20 | 20 | 10 | 10 | 3 bytes |
-| 3 | 20 × 20 | 20 | 12 | 8 | 1 byte |
+| 0 | 20 × 20 | 20 | 4 | 16 | 8 bytes |
+| 1 | 20 × 20 | 20 | 6 | 14 | 6 bytes |
+| 2 | 20 × 20 | 20 | 10 | 10 | 2 bytes |
+| 3 | 20 × 20 | 20 | 12 | 8 | 0 bytes (an empty record) |
 
 Why the fewest blocks: with a fixed parity share, a longer block corrects more errors in total, and the interleaving of 4.8 already spreads a local defect across blocks. The decoding cost of a 255-byte block is small against the reader's frame budget.
 
 ## 4.7 Block splits for sample sizes
 
-Computed with the algorithm of 4.6. "Blocks" lists the long blocks first.
+Computed with the algorithm of 4.6. "Blocks" lists the long blocks first. The last column is the parity bytes of the layer over its codewords, B · P / N, rounded to one decimal, halves to even.
 
-| N | Level | B | Blocks (count × length) | P | Errors per block (P/2) | K | Actual parity share |
+| N | Level | B | Blocks (count × length) | P | Errors per block (P/2) | K | Parity share B · P / N |
 |---|---|---|---|---|---|---|---|
 | 32 | 0 | 1 | 1 × 32 | 6 | 3 | 26 | 18.8% |
 | 32 | 1 | 1 | 1 × 32 | 10 | 5 | 22 | 31.2% |
@@ -223,7 +241,7 @@ Consequence: any run of up to B consecutive codewords in the stream touches each
 Terms:
 
 - An **error** is a codeword byte whose value is wrong and whose position the decoder does not know in advance.
-- An **erasure** is a codeword byte that the reader has marked as unreliable before decoding, for example because a module in it could not be classified. Its value is ignored.
+- An **erasure** is a codeword byte that the reader has marked as unreliable before decoding, for example because a module in it could not be classified. Its value is ignored. A byte marked more than once is one erasure.
 
 For a block with parity count P, e errors and s erasures:
 
@@ -240,17 +258,22 @@ A bounded-distance decoder (one that corrects only within 2e + s ≤ P) MUST rej
 - a root points to a position outside the n bytes of the shortened block;
 - the syndromes of the corrected block, recomputed, are not all zero.
 
-If any block of the base layer is rejected, the base layer is undecodable. The reader MUST NOT present any content of that symbol and MAY try another capture.
+If any block of the base layer is rejected, the base layer is undecodable (`E_ECC_FAILED`, Damaged, chapter 9, 9.8). The reader MUST NOT present any content of that symbol and MAY try another capture.
 
 No guarantee against miscorrection. When 2e + s > P, a bounded-distance decoder can return a valid but wrong codeword without any sign of failure. For a received word that is far from every codeword, published analysis puts the chance of such a wrong decoding at roughly 1/t! with t = P/2 (R. J. McEliece and L. Swanson, "On the decoder error probability for Reed-Solomon codes", IEEE Transactions on Information Theory 32(5), 1986). At P = 2 or P = 4 that chance is large. This chapter therefore promises detection of nothing. The CRC-32C at the end of the container (chapter 3) is the check that catches a miscorrection, and a reader MUST verify it after error correction.
 
 A reader MAY use a decoder that corrects beyond 2e + s ≤ P (for example list decoding or decoding with soft module values). Every result of such a decoder is still subject to the CRC-32C check of chapter 3 and to the other checks of chapters 2 to 6.
 
+Candidates. Every message that reaches the CRC-32C check is one more chance, 2^−32, that a wrong message passes it. Retries with other erasure sets, the candidates of a list decoder and repeated frames add up. Therefore:
+
+- A reader MUST NOT check more than 256 candidate messages of one layer of one symbol against the CRC-32C per captured frame.
+- A reader MUST NOT present a result that it found only with a decoder beyond 2e + s ≤ P until it has decoded the same message from a second, separately captured frame. A reader of a single still image therefore presents only results within 2e + s ≤ P.
+
 ## 4.10 Error-correction scheme of format version 0
 
 In format version 0 the base layer's error correction is always the Reed-Solomon code of this chapter. The format word has no field that selects another scheme.
 
-A later format version (chapter 9, 9.2) may define a soft-decision LDPC profile. The candidate construction is a binary LDPC code whose parity-check matrix is built by plain progressive edge growth (PEG) or as a regular Gallager matrix, decoded with belief propagation on a flooding schedule. It would be defined only if measurement on real captures shows a clear gain in payload per module over this Reed-Solomon code at a decoding cost within the reader's frame budget (chapter 1, 1.2).
+A later format version (chapter 9, 9.2) may define a soft-decision LDPC profile. The candidate construction is a binary LDPC code whose parity-check matrix is built by plain progressive edge growth (PEG) or as a regular Gallager matrix, decoded with belief propagation on a flooding schedule. It would be defined only if measurement on real captures shows at least 10% more payload per module than this Reed-Solomon code at an equal decode-failure rate, decoded in at most 5 ms per symbol on the reference phone (chapter 1, 1.2).
 
 Design note — code families this specification will not use:
 
@@ -262,12 +285,15 @@ Design note — code families this specification will not use:
 | Raptor (RFC 5053) | follow-on patents declared against it run until about 2028-11 (for example US 8,887,020) |
 | Layered (row-by-row) LDPC decoding schedules | covered by patents until 2028-08 (for example US 7,730,377); the flooding schedule avoids them |
 | Standard quasi-cyclic base matrices | copying a standard's base matrix brings that standard's patent declarations with it; a later profile chooses its own circulant shifts |
+| LDPC-Staircase (RFC 5170) | covered by patents until 2028-01 (for example US 9,136,878) |
+| Dense random linear codes (RFC 8681) | patent disclosures against the RFC do not commit to licensing terms; a later profile checks the claims first |
+| Modified PEG constructions | several variants of PEG are patented, until about 2031-06 (for example US 8,381,065); only the plain construction of the 2001 and 2005 papers is a candidate |
 
 Reed-Solomon codes (1960), Gallager's regular LDPC codes (1962) and plain PEG construction (published 2001 and 2005) have no known live patent.
 
 ## 4.11 Worked examples
 
-Values in this section were computed by a script that implements 4.2 to 4.8. Annex A (A.2) gives a complete symbol with N = 42 at level 0.
+Values in this section were computed by a script that implements 4.2 to 4.8. Annex A (A.2) gives a complete symbol.
 
 ### 4.11.1 N = 50 codewords at level 1 (M)
 

@@ -1,7 +1,7 @@
 //! The dictionary registry of 6.11.
 //!
 //! A symbol names a dictionary by its ID; every reader of a format version
-//! carries the registered bytes. In specification 0.1 only ID 0 ("none")
+//! carries the registered bytes. In specification 0.2 only ID 0 ("none")
 //! exists, so [`REGISTRY`] is empty and every other ID fails with
 //! [`CodecError::UnknownDictionary`].
 //!
@@ -38,9 +38,9 @@ pub struct Dictionary {
 }
 
 /// The specification version whose registry this crate carries (6.11 rule 4).
-pub const REGISTRY_REVISION: &str = "0.1";
+pub const REGISTRY_REVISION: &str = "0.2";
 
-/// Every dictionary registered up to [`REGISTRY_REVISION`]. Empty in 0.1.
+/// Every dictionary registered up to [`REGISTRY_REVISION`]. Empty in 0.2.
 pub const REGISTRY: &[Dictionary] = &[];
 
 /// IDs registered by the specification.

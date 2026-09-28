@@ -122,6 +122,7 @@ fn version_and_help() {
         "--module-px",
         "--dpi",
         "--quiet-zone",
+        "--qr",
         "--no-qr",
         "--codec",
     ] {
@@ -135,7 +136,7 @@ fn version_and_help() {
 #[test]
 fn png_round_trips_with_and_without_the_qr_code() {
     let dir = TempDir::new("png");
-    for qr in [&[][..], &["--no-qr"]] {
+    for qr in [&["--qr"][..], &[], &["--no-qr"]] {
         let mut args = vec!["--url", URL];
         args.extend_from_slice(qr);
         let output = make_and_read(&dir, &args, &[]);
@@ -153,17 +154,18 @@ fn png_round_trips_with_and_without_the_qr_code() {
 #[test]
 fn symbol_options_are_applied() {
     let dir = TempDir::new("options");
-    // The text takes a 22-byte container with codec 2 and 26 bytes stored. K (4.6) is 16 at
-    // 20 x 20, 24 at 24 x 20, 34 at 24 x 24 level 0, 28 at 24 x 24 level 1, 26 at 28 x 28
-    // level 3.
+    // The text takes a 23-byte container with codec 2 and 27 bytes stored. K (4.6) is 16 at
+    // 20 x 20, 24 at 24 x 20 and 20 x 24, 34 at 20 x 28 level 0, 28 at 20 x 28 level 1, 24 at
+    // 20 x 36 level 3. The recommended size rule (1.5) picks the smallest area with sides within
+    // a factor of 2, and the taller of two equal areas.
     let cases: [(&[&str], u32, u32, u8); 7] = [
-        (&["--level", "3"], 28, 28, 3),
+        (&["--level", "3"], 20, 36, 3),
         (&["--size", "48x20"], 48, 20, 0),
         (&["--max-height", "20"], 24, 20, 0),
         (&["--max-width", "20"], 20, 24, 0),
-        (&["--profile", "print"], 24, 24, 1),
-        (&["--profile", "lowend", "--quiet-zone", "5"], 24, 24, 1),
-        (&["--profile", "screen", "--module-px", "3", "--codec", "stored"], 24, 24, 0),
+        (&["--profile", "print"], 20, 28, 1),
+        (&["--profile", "lowend", "--quiet-zone", "5"], 20, 28, 1),
+        (&["--profile", "screen", "--module-px", "3", "--codec", "stored"], 20, 28, 0),
     ];
     for (options, width, height, level) in cases {
         let mut args = vec!["--text", "0123456789 ABCDEFGH"];
@@ -179,6 +181,30 @@ fn symbol_options_are_applied() {
     }
     let output = make_and_read(&dir, &["--text", "x", "--codec", "0,digits"], &["--json"]);
     assert!(stdout(&output).contains("\"codec\":0,"));
+}
+
+#[test]
+fn the_qr_code_is_on_by_default_only_with_print() {
+    let dir = TempDir::new("qr-default");
+    let png = dir.path("symbol.png");
+    let size = |extra: &[&str]| {
+        let mut args = vec!["make", "--text", "NMT Code", "--size", "24x24", "-o", path_str(&png)];
+        args.extend_from_slice(extra);
+        assert_ok(&run(&args));
+        png_size(&std::fs::read(&png).unwrap())
+    };
+    // Screen: 24 modules plus 2 + 2 quiet zone at 4 pixels, no QR Code (8.5).
+    assert_eq!(size(&[]), (4 * 28, 4 * 28));
+    assert_eq!(size(&["--no-qr"]), (4 * 28, 4 * 28));
+    // With the QR Code above the square symbol: its 29 modules, the 4-module gap and its 4-module
+    // quiet zone above the symbol (8.4.3).
+    assert_eq!(size(&["--qr"]), (4 * 37, 4 * (37 + 24 + 2)));
+    // Print: on by default, off with --no-qr.
+    assert_eq!(size(&["--profile", "print"]), (5 * 37, 5 * 63));
+    assert_eq!(size(&["--profile", "print", "--no-qr"]), (5 * 28, 5 * 28));
+    // Both flags at once are a usage error.
+    let both = run(&["make", "--text", "x", "--qr", "--no-qr", "-o", path_str(&png)]);
+    assert_eq!(both.status.code(), Some(2));
 }
 
 #[test]
@@ -507,4 +533,74 @@ fn usage_errors_exit_with_2() {
     let too_small = run(&["make", "--url", URL, "--size", "20x20", "-o", png]);
     assert_eq!(too_small.status.code(), Some(1));
     assert!(stderr(&too_small).contains("holds 16"), "{}", stderr(&too_small));
+}
+
+/// Specification 5.11: a symbol drawn inside another is reported as `E_NESTED_SYMBOL`, and
+/// neither symbol's content is shown.
+#[test]
+fn nested_symbols_are_an_error_and_show_nothing() {
+    let dir = TempDir::new("nested");
+    let options = EncodeOptions {
+        size: nmtcode::SizeRule::Exact { width: 96, height: 96 },
+        ..EncodeOptions::default()
+    };
+    let outer = nmtcode::encode_text("outer content", &options).unwrap();
+    let inner = nmtcode::encode_text("inner content", &EncodeOptions::default()).unwrap();
+    let (iw, ih) = (inner.width(), inner.height());
+    let mut grid = outer.grid().clone();
+    for y in 0..ih + 4 {
+        for x in 0..iw + 4 {
+            grid.set(36 + x, 36 + y, false);
+        }
+    }
+    for y in 0..ih {
+        for x in 0..iw {
+            grid.set(38 + x, 38 + y, inner.grid().get(x, y).unwrap());
+        }
+    }
+    let path = dir.path("nested.png");
+    std::fs::write(&path, render_png(&grid, &RenderOptions::default()).unwrap()).unwrap();
+    let output = run(&["read", path_str(&path)]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty(), "{}", stdout(&output));
+    assert!(stderr(&output).contains("E_NESTED_SYMBOL"), "{}", stderr(&output));
+    let json = run(&["read", "--json", path_str(&path)]);
+    assert!(
+        stdout(&json).contains("\"error\":{\"name\":\"E_NESTED_SYMBOL\",\"outcome\":\"malformed\""),
+        "{}",
+        stdout(&json)
+    );
+}
+
+/// Specification 1.4: a reversed image (light modules on dark) is read from its inverse.
+#[test]
+fn a_reversed_image_is_read() {
+    let dir = TempDir::new("reversed");
+    let symbol = nmtcode::encode_url(URL, &EncodeOptions::default()).unwrap();
+    let png = render_png(symbol.grid(), &RenderOptions::default()).unwrap();
+    let mut decoder = png::Decoder::new(std::io::Cursor::new(png));
+    decoder.set_transformations(png::Transformations::EXPAND);
+    let mut reader = decoder.read_info().unwrap();
+    let mut pixels = vec![0u8; reader.output_buffer_size().unwrap()];
+    let frame = reader.next_frame(&mut pixels).unwrap();
+    assert_eq!(
+        (frame.color_type, frame.bit_depth),
+        (png::ColorType::Grayscale, png::BitDepth::Eight)
+    );
+    for v in &mut pixels {
+        *v = 255 - *v;
+    }
+    let mut out = Vec::new();
+    {
+        let mut encoder = png::Encoder::new(&mut out, frame.width, frame.height);
+        encoder.set_color(png::ColorType::Grayscale);
+        encoder.set_depth(png::BitDepth::Eight);
+        let mut writer = encoder.write_header().unwrap();
+        writer.write_image_data(&pixels[..frame.buffer_size()]).unwrap();
+    }
+    let path = dir.path("reversed.png");
+    std::fs::write(&path, out).unwrap();
+    let output = run(&["read", path_str(&path)]);
+    assert_ok(&output);
+    assert!(stdout(&output).contains(URL), "{}", stdout(&output));
 }

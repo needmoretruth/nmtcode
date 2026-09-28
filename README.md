@@ -5,10 +5,11 @@ English | [한국어](README.ko.md)
 NMT Code (needmoretruth code) is a two-dimensional code for the cameras of current phones and
 computers. The same content needs fewer modules than a QR Code.
 
-![An NMT Code symbol holding this repository's address, with a small QR Code beside it](docs/images/example-url.png)
+![An NMT Code symbol holding this repository's address, below a QR Code](docs/images/example-url.png)
 
-The symbol on the left holds `https://github.com/needmoretruth/nmtcode`. The QR Code on the right
-holds the same address, so a phone that reads only QR Codes gets a link to this page.
+The NMT Code symbol at the bottom holds `https://github.com/needmoretruth/nmtcode`. The QR Code
+above it holds the same address, so a phone that reads only QR Codes gets a link to this page.
+`--qr` adds that QR Code; printed codes (`--profile print`) have it by default.
 
 > **Version 0.0.1 is a prototype.** It makes black-and-white codes as PNG or SVG and reads back PNG
 > files it made. Reading camera photos, colour codes and multi-frame file transfer are still being
@@ -18,16 +19,18 @@ holds the same address, so a phone that reads only QR Codes gets a link to this 
 
 | Content | Bytes | NMT Code | QR Code |
 |---|---:|---:|---:|
-| `https://github.com/needmoretruth/nmtcode` | 40 | 24 × 24 = 576 | 29 × 29 = 841 |
-| A Korean sentence, 84 bytes in UTF-8 | 84 | 32 × 32 = 1,024 | 37 × 37 = 1,369 (UTF-8) · 33 × 33 = 1,089 (EUC-KR) |
-| An 87-byte English sentence | 87 | 32 × 32 = 1,024 | 37 × 37 = 1,369 |
-| 50 digits | 50 | 24 × 24 = 576 | 25 × 25 = 625 |
+| `https://github.com/needmoretruth/nmtcode` | 40 | 20 × 28 = 560 | 29 × 29 = 841 |
+| A Korean sentence, 84 bytes in UTF-8 | 84 | 24 × 36 = 864 | 37 × 37 = 1,369 (UTF-8) · 33 × 33 = 1,089 (EUC-KR) |
+| An 87-byte English sentence | 87 | 24 × 36 = 864 | 37 × 37 = 1,369 |
+| 50 digits | 50 | 20 × 28 = 560 | 25 × 25 = 625 |
 
 - Both codes use their lowest error-correction level, which restores about 7.5% (NMT Code) and 7%
   (QR Code) of the bytes. QR Code is the smallest version that holds the content. Many QR readers
   decode Korean correctly only in UTF-8.
 - The counts leave out the quiet zone: NMT Code needs 2 modules on each side, QR Code 4.
-- The QR Code beside the symbol adds to the image. `--no-qr` leaves it out.
+- NMT Code symbols are rectangles whose sides are within a factor of 2, which is why they are not square.
+- The counts are for the symbol alone. With the QR Code of `--qr` beside it, the image is larger than a
+  QR Code of the same content.
 - Measured on 2026-09-29 with nmtcode 0.0.1, zxing-cpp 3.1.1 and segno 1.6.6. Camera reading
   distance and failure rate are not measured yet.
 
@@ -87,7 +90,7 @@ The full program is [`crates/nmtcode-cli/examples/round_trip.rs`](crates/nmtcode
 | `nmtcode-ecc` | Reed-Solomon error correction over GF(2^8) | ✅ |
 | `nmtcode-payload` | Codecs: stored, digits, alphanumeric, token table, Hangul packing, brotli | ✅ without brotli |
 | `nmtcode-symbol` | Finder patterns, reference marks, module placement, whitening | ✅ |
-| `nmtcode-render` | PNG and SVG output with the QR Code beside the symbol | |
+| `nmtcode-render` | PNG and SVG output, with or without a QR Code beside the symbol | |
 | `nmtcode-detect` | Finds symbols in PNG images the renderer made | |
 | `nmtcode-cli` | The `nmtcode` command | |
 
@@ -95,7 +98,7 @@ The `no_std` crates also build for `wasm32-unknown-unknown`. No crate uses `unsa
 
 ## Specification
 
-The format is written in [`spec/`](spec/01-scope-and-conventions.md), draft 0.1. It defines every
+The format is written in [`spec/`](spec/01-scope-and-conventions.md), draft 0.2. It defines every
 bit, so another program can make and read NMT Code without this code. The worked examples of the
 specification and its complete test symbol ([Annex A](spec/annex-a-test-vectors.md)) are tests of
 this repository.

@@ -4,8 +4,8 @@
 use core::fmt;
 
 use nmtcode_core::{
-    ContentType, FormatWord, ModuleGrid, Record, RecordContent, RecordForm, StaticFields,
-    SymbolClass, WriteError, pad_message,
+    ContentType, FormatEcho, FormatWord, ModuleGrid, Record, RecordContent, RecordForm,
+    StaticFields, SymbolClass, WriteError, pad_message,
 };
 use nmtcode_ecc::{BlockSplit, EccError};
 use nmtcode_payload::Coded;
@@ -20,13 +20,15 @@ use crate::size::{self, SizeFailure, SizeRule};
 /// size of a profile is a matter of drawing and belongs to the renderer.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Profile {
-    /// `screen`: black and white, level 0, 4 screen pixels per module. The default.
+    /// `screen`: black and white, level 0, modules of at least 0.4 mm and 4 device pixels
+    /// (4 CSS pixels when the density is unknown). The default.
     #[default]
     Screen,
-    /// `print`: black and white, level 1, modules of at least 0.4 mm and 4 printer dots.
+    /// `print`: black and white, level 1, modules of at least 0.4 mm and 4 printer dots, with
+    /// the bootstrap QR Code of chapter 8 on by default.
     Print,
-    /// `lowend`: black and white, level 1, large modules for cameras with about 2 pixels per
-    /// module.
+    /// `lowend`: black and white, level 1, large modules for cameras that see about 2 pixels
+    /// per module.
     LowEnd,
     /// `color`: colour profile 1 of chapter 7. Not implemented in this version: [`encode`]
     /// refuses it with [`EncodeError::ColourNotImplemented`].
@@ -69,8 +71,8 @@ pub struct EncodeOptions {
     pub profile: Profile,
     /// The error-correction level, 0 to 3 (chapter 4, 4.5), instead of the profile's default.
     pub level: Option<u8>,
-    /// How the symbol size is chosen. The default is the smallest square that holds the
-    /// container (1.5).
+    /// How the symbol size is chosen. The default is the RECOMMENDED rule of 1.5: the smallest
+    /// area with sides within a factor of 2 of each other.
     pub size: SizeRule,
     /// Which codecs are tried (chapter 6, 6.3). The default tries every codec.
     pub codecs: CodecOptions,
@@ -99,7 +101,7 @@ pub enum EncodeError {
         height: u32,
     },
     /// The records break a rule of chapter 3 (no record, the action rule, a file name without a
-    /// file, more than 16 MiB).
+    /// file, more than 1 MiB).
     Records(WriteError),
     /// The container does not fit the requested exact size.
     DoesNotFit {
@@ -289,10 +291,14 @@ fn internal_ecc(_: EccError) -> EncodeError {
 /// 2. Every codec that [`EncodeOptions::codecs`] allows is tried and the one with the smallest
 ///    container wins (chapter 6, 6.3). A record of a "never compress" type (3.4.2) forces
 ///    codec 0.
-/// 3. The container gets its CRC-32C, and the size rule picks the symbol size (1.5).
+/// 3. The container gets its format echo byte and CRC-32C, and the size rule picks the symbol
+///    size (1.5).
 /// 4. The message is padded to the capacity K (3.8), split into blocks with Reed-Solomon parity
 ///    and interleaved (chapter 4), placed and whitened (chapter 5), and the format word is
 ///    written (chapter 2).
+///
+/// Copy A of the format word carries `F_A` (masked with `MASK_A`) and copy B carries `F_B`
+/// (masked with `MASK_B`), so either copy alone gives the format word to a reader (2.5, 2.7).
 ///
 /// # Errors
 ///
@@ -329,7 +335,9 @@ pub fn encode(records: &[Record<'_>], options: &EncodeOptions) -> Result<Symbol,
     })
     .ok_or(EncodeError::Records(WriteError::ContentTooLarge))?;
     let fields = fields_of(&chosen);
-    let mut message = fields.write(&chosen.bytes).map_err(EncodeError::Records)?;
+    let echo = FormatEcho::new(SymbolClass::Static, level, 0, 0)
+        .map_err(|_| EncodeError::Internal("the format echo refused a computed value"))?;
+    let mut message = fields.write(echo, &chosen.bytes).map_err(EncodeError::Records)?;
     let container_len = message.len();
 
     let (width, height) =
@@ -349,7 +357,7 @@ pub fn encode(records: &[Record<'_>], options: &EncodeOptions) -> Result<Symbol,
     let stream = nmtcode_ecc::encode_stream(&split, &message).map_err(internal_ecc)?;
     let format = FormatWord::new(SymbolClass::Static, width, height, level, 0, 0)
         .map_err(|_| EncodeError::Internal("the format word refused a computed value"))?;
-    let grid = layout.draw(format.encode(), &stream).map_err(internal_symbol)?;
+    let grid = layout.draw_copies(format.encode_copies(), &stream).map_err(internal_symbol)?;
     Ok(Symbol {
         grid,
         format,

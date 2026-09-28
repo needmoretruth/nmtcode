@@ -122,6 +122,14 @@ pub fn layout(width: u32, height: u32, options: &RenderOptions) -> Result<Layout
     if options.dpi == Some(0) {
         return Err(RenderError::InvalidDpi);
     }
+    if options.print_growth_dots > 0
+        && u64::from(options.print_growth_dots) * 2 >= u64::from(options.module_px)
+    {
+        return Err(RenderError::GrowthTooLarge {
+            dots: options.print_growth_dots,
+            module_px: options.module_px,
+        });
+    }
     let w = i64::from(width);
     let h = i64::from(height);
     let q = i64::from(options.quiet_zone);
@@ -143,7 +151,7 @@ pub fn layout(width: u32, height: u32, options: &RenderOptions) -> Result<Layout
         // S = (17 + 4v) · n (8.4.1).
         let qr_side = (17 + 4 * i64::from(version)) * n;
         let qr_quiet = QR_QUIET_ZONE * n;
-        let side = options.bootstrap_side.unwrap_or(if width >= height {
+        let side = options.bootstrap_side.unwrap_or(if width > height {
             BootstrapSide::Left
         } else {
             BootstrapSide::Above

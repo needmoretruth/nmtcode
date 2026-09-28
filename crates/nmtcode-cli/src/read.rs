@@ -51,13 +51,24 @@ pub fn sanitise_file_name(name: Option<&str>, fallback: &str) -> String {
     if short.is_empty() { fallback.to_owned() } else { short.to_owned() }
 }
 
-/// Text for a terminal: control characters other than line feed and tab, and the Unicode
-/// characters that reorder text on screen, are shown as `\u{…}` so that a record cannot move
-/// the cursor, change colours or disguise a URL. Text for a pipe or file is left as it is.
+/// Text for a terminal: control characters other than line feed and tab, the Unicode
+/// characters that reorder text on screen and the invisible characters of chapter 3 (3.4.3) are
+/// shown as `\u{…}` so that a record cannot move the cursor, change colours, hide text or
+/// disguise a URL. Text for a pipe or file is left as it is.
 fn for_terminal(text: &str, terminal: bool) -> Cow<'_, str> {
     let hidden = |c: char| {
         (c.is_control() && c != '\n' && c != '\t')
-            || matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+            || matches!(
+                c,
+                '\u{00AD}'
+                    | '\u{061C}'
+                    | '\u{180E}'
+                    | '\u{200B}'..='\u{200F}'
+                    | '\u{202A}'..='\u{202E}'
+                    | '\u{2060}'..='\u{2064}'
+                    | '\u{2066}'..='\u{2069}'
+                    | '\u{FEFF}'
+            )
     };
     if !terminal || !text.chars().any(hidden) {
         return Cow::Borrowed(text);
@@ -105,7 +116,7 @@ const fn outcome_name(outcome: SpecOutcome) -> &'static str {
         SpecOutcome::Malformed => "malformed",
         SpecOutcome::Presented => "presented",
         SpecOutcome::PresentedBaseOnly => "presented_base_only",
-        SpecOutcome::ErrorReported => "error_reported",
+        SpecOutcome::PresentedWithError => "presented_with_error",
     }
 }
 
@@ -300,11 +311,15 @@ pub fn run(args: &[OsString]) -> Result<Outcome, Failure> {
         return Err(Failure::Other(msg::not_a_directory(dir)));
     }
     let bytes = read_input(&path)?;
-    let grids = nmtcode_detect::read_png(&bytes)
+    let detection = nmtcode_detect::detect_png(&bytes)
         .map_err(|error| Failure::Other(text::detect_error(&error)))?;
-    if grids.is_empty() {
+    let grids = detection.symbols;
+    if grids.is_empty() && detection.nested == 0 {
         return Err(Failure::Other(msg::NOT_FOUND.to_owned()));
     }
+    // Nested symbols (specification 5.11) are reported once, after the others: neither the
+    // inner nor the outer symbol is presented.
+    let count = grids.len() + usize::from(detection.nested > 0);
 
     let terminal = !json && std::io::stdout().is_terminal();
     let mut report =
@@ -313,10 +328,13 @@ pub fn run(args: &[OsString]) -> Result<Outcome, Failure> {
     for (index, grid) in grids.iter().enumerate() {
         match nmtcode::decode(grid, &options) {
             Ok(decoded) => {
-                present(&mut report, index, grids.len(), &decoded, out.as_deref(), terminal);
+                present(&mut report, index, count, &decoded, out.as_deref(), terminal);
             }
-            Err(error) => failure(&mut report, index, grids.len(), error),
+            Err(error) => failure(&mut report, index, count, error),
         }
+    }
+    if detection.nested > 0 {
+        failure(&mut report, grids.len(), count, nmtcode::SpecError::NestedSymbol.into());
     }
 
     let mut stdout = std::io::stdout().lock();
@@ -372,5 +390,7 @@ mod tests {
         assert_eq!(for_terminal("https://e.org/\u{202e}gpj", true), "https://e.org/\\u{202e}gpj");
         assert_eq!(for_terminal("a\u{1b}b", false), "a\u{1b}b");
         assert_eq!(for_terminal("tab\there", true), "tab\there");
+        assert_eq!(for_terminal("pay\u{200B}pal.com", true), "pay\\u{200b}pal.com");
+        assert_eq!(for_terminal("a\u{FEFF}b\u{00AD}c", true), "a\\u{feff}b\\u{ad}c");
     }
 }

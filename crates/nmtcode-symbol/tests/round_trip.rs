@@ -18,10 +18,10 @@ fn stream_from_seed(seed: u64, len: usize) -> Vec<u8> {
         .collect()
 }
 
-fn check_round_trip(layout: &Layout, format: u64, stream: &[u8]) {
-    let grid = layout.draw(format, stream).unwrap();
+fn check_round_trip(layout: &Layout, format: [u64; 2], stream: &[u8]) {
+    let grid = layout.draw_copies(format, stream).unwrap();
     assert_eq!(layout.read_stream(&grid).unwrap(), stream);
-    assert_eq!(read_format_copies(&grid).unwrap(), [format, format]);
+    assert_eq!(read_format_copies(&grid).unwrap(), format);
     // Every function module except the format copies has its fixed value.
     for y in 0..layout.height() {
         for x in 0..layout.width() {
@@ -39,12 +39,13 @@ proptest! {
     fn round_trip_any_size(
         w_code in 1u32..=70,
         h_code in 1u32..=70,
-        format in 0u64..(1 << 47),
+        format_a in 0u64..(1 << 47),
+        format_b in 0u64..(1 << 47),
         seed in any::<u64>(),
     ) {
         let layout = Layout::new(4 * (w_code + 4), 4 * (h_code + 4)).unwrap();
         let stream = stream_from_seed(seed, layout.codeword_count());
-        check_round_trip(&layout, format, &stream);
+        check_round_trip(&layout, [format_a, format_b], &stream);
     }
 
     /// The placement order visits every data module once, in the column-pair walk of 5.8, and
@@ -78,7 +79,7 @@ proptest! {
     fn one_flipped_module_is_one_bit(w_code in 1u32..=20, h_code in 1u32..=20, pick in any::<u64>(), seed in any::<u64>()) {
         let layout = Layout::new(4 * (w_code + 4), 4 * (h_code + 4)).unwrap();
         let stream = stream_from_seed(seed, layout.codeword_count());
-        let mut grid = layout.draw(0, &stream).unwrap();
+        let mut grid = layout.draw_copies([0, 0], &stream).unwrap();
         let d = u64::try_from(layout.data_module_count()).unwrap();
         let k = usize::try_from(pick % d).unwrap();
         let (x, y) = layout.placement().nth(k).unwrap();
@@ -98,13 +99,14 @@ fn round_trip_large_and_unequal_sizes() {
     for (w, h) in [(4108, 20), (20, 4108), (1000, 600), (48, 20), (20, 48), (4108, 4108)] {
         let layout = Layout::new(w, h).unwrap();
         let stream = stream_from_seed(u64::from(w * 7 + h), layout.codeword_count());
-        let grid = layout.draw(0x51F3_694E_AFAA, &stream).unwrap();
+        let format = [0x51F3_694E_AFAA, 0x3FCA_34BE_1F26];
+        let grid = layout.draw_copies(format, &stream).unwrap();
         assert_eq!(layout.read_stream(&grid).unwrap(), stream, "{w} x {h}");
-        assert_eq!(read_format_copies(&grid).unwrap(), [0x51F3_694E_AFAA; 2], "{w} x {h}");
+        assert_eq!(read_format_copies(&grid).unwrap(), format, "{w} x {h}");
     }
     check_round_trip(
         &Layout::new(1000, 600).unwrap(),
-        0x7FFF_FFFF_FFFF,
+        [0x7FFF_FFFF_FFFF, 0],
         &stream_from_seed(3, 73717),
     );
 }

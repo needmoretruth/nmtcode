@@ -12,7 +12,7 @@ mod common;
 
 use common::*;
 use nmtcode_core::ModuleGrid;
-use nmtcode_detect::{LumaImage, decode_png, find_symbols, read_png};
+use nmtcode_detect::{LumaImage, decode_png, detect, find_symbols, read_png};
 use nmtcode_render::{RenderOptions, render_png};
 
 fn options(module_px: u32, quiet_zone: u32, bootstrap: bool) -> RenderOptions {
@@ -30,23 +30,15 @@ fn assert_single(found: &[ModuleGrid], expected: &ModuleGrid, what: &str) {
 }
 
 #[test]
-fn a27_transcription_matches_its_hex_rows() {
-    for (y, (row, hex)) in A27_ROWS.iter().zip(A27_HEX).enumerate() {
-        let bits: u32 = row.chars().fold(0, |acc, c| acc << 1 | u32::from(c == '#'));
-        assert_eq!(bits, hex, "row {y}");
-    }
-}
-
-#[test]
-fn a27_default_options() {
-    let grid = a27();
+fn symbol_24_default_options() {
+    let grid = symbol_24();
     let found = read_png(&render_png(&grid, &RenderOptions::default()).unwrap()).unwrap();
-    assert_single(&found, &grid, "A.2.7, default options");
+    assert_single(&found, &grid, "24 x 24, default options");
 }
 
 #[test]
-fn a27_module_sizes_and_quiet_zones() {
-    let grid = a27();
+fn symbol_24_module_sizes_and_quiet_zones() {
+    let grid = symbol_24();
     for module_px in 2..=9 {
         for quiet_zone in [2, 3, 4, 7] {
             for bootstrap in [false, true] {
@@ -63,8 +55,8 @@ fn a27_module_sizes_and_quiet_zones() {
 }
 
 #[test]
-fn a27_larger_modules() {
-    let grid = a27();
+fn symbol_24_larger_modules() {
+    let grid = symbol_24();
     for module_px in [12, 16, 25] {
         let found = read_png(&render_png(&grid, &options(module_px, 2, true)).unwrap()).unwrap();
         assert_single(&found, &grid, &format!("{module_px} px"));
@@ -72,15 +64,15 @@ fn a27_larger_modules() {
 }
 
 #[test]
-fn map_2_8_symbols() {
+fn symbol_20_symbols() {
     for seed in 0..6 {
-        let grid = map_2_8(seed);
+        let grid = symbol_20(seed);
         for module_px in [2, 3, 5] {
             for bootstrap in [false, true] {
                 let found =
                     read_png(&render_png(&grid, &options(module_px, 2, bootstrap)).unwrap())
                         .unwrap();
-                assert_single(&found, &grid, &format!("2.8 seed {seed}, {module_px} px"));
+                assert_single(&found, &grid, &format!("20 x 20 seed {seed}, {module_px} px"));
             }
         }
     }
@@ -150,7 +142,7 @@ const RESAMPLINGS: [(u32, f64); 12] = [
 
 #[test]
 fn non_integer_resampling() {
-    let symbols = [a27(), make_symbol(100, 100, 11), make_symbol(48, 32, 12), map_2_8(9)];
+    let symbols = [symbol_24(), make_symbol(100, 100, 11), make_symbol(48, 32, 12), symbol_20(9)];
     for grid in &symbols {
         for &(base, factor) in &RESAMPLINGS {
             for bootstrap in [false, true] {
@@ -179,7 +171,7 @@ fn resampled_400() {
 
 #[test]
 fn extra_white_margin() {
-    let grid = a27();
+    let grid = symbol_24();
     let image = render_luma(&grid, &options(3, 2, true));
     for (l, t, r, b) in [(0, 0, 0, 0), (50, 3, 0, 170), (1, 200, 333, 9), (400, 400, 400, 400)] {
         assert_single(
@@ -243,7 +235,7 @@ fn png_colour_types() {
 
 #[test]
 fn rotations_and_mirror_images() {
-    for grid in [a27(), make_symbol(48, 32, 31), make_symbol(20, 36, 32)] {
+    for grid in [symbol_24(), make_symbol(48, 32, 31), make_symbol(20, 36, 32)] {
         let image = render_luma(&grid, &options(3, 2, true));
         let turned90 = rotate90(&image);
         let turned180 = rotate90(&turned90);
@@ -265,9 +257,9 @@ fn rotations_and_mirror_images() {
 
 #[test]
 fn several_symbols_in_one_image() {
-    let a = a27();
+    let a = symbol_24();
     let b = make_symbol(48, 32, 41);
-    let c = map_2_8(3);
+    let c = symbol_20(3);
     let ia = render_luma(&a, &options(3, 2, true));
     let ib = render_luma(&b, &options(3, 2, false));
     let ic = render_luma(&c, &options(3, 4, true));
@@ -319,7 +311,7 @@ fn blank_and_noise_images() {
 
 #[test]
 fn inconsistent_luma_image_gives_nothing() {
-    let grid = a27();
+    let grid = symbol_24();
     let mut image = render_luma(&grid, &options(3, 2, false));
     image.pixels.pop();
     assert!(find_symbols(&image).is_empty());
@@ -357,4 +349,58 @@ fn damaged_finder_is_rejected_but_three_suffice() {
         }
     }
     assert!(find_symbols(&image).is_empty());
+}
+
+/// 1.4 and 5.11: a reversed symbol (light modules on dark) is read from the inverted image,
+/// at any rotation and after resampling; the grid is the one drawn.
+#[test]
+fn reversed_symbols_are_read_from_the_inverted_image() {
+    for grid in [symbol_24(), make_symbol(48, 32, 71), symbol_20(5)] {
+        let image = render_luma(&grid, &options(3, 2, false));
+        let reversed = map_pixels(&image, |v| 255 - v);
+        let what = format!("{} x {}", grid.width(), grid.height());
+        for (name, img) in [
+            ("as drawn", reversed.clone()),
+            ("90°", rotate90(&reversed)),
+            ("mirror", mirror(&reversed)),
+            ("resampled", resample(&reversed, 1.37)),
+        ] {
+            let detection = detect(&img);
+            assert!(detection.inverted, "{what}, {name}");
+            assert_eq!(detection.nested, 0, "{what}, {name}");
+            assert_single(&detection.symbols, &grid, &format!("{what}, {name}"));
+        }
+        // The same symbol dark on light is found without inversion.
+        let detection = detect(&image);
+        assert!(!detection.inverted);
+        assert_single(&detection.symbols, &grid, &what);
+    }
+}
+
+/// 5.11: a symbol drawn inside the data area of another is nested; neither is returned and
+/// both are counted.
+#[test]
+fn a_symbol_inside_another_is_nested() {
+    let mut outer = make_symbol(96, 96, 81);
+    let inner = symbol_20(6);
+    // A light square of 24 modules holds the inner symbol and its 2-module quiet zone.
+    for y in 0..24 {
+        for x in 0..24 {
+            outer.set(36 + x, 36 + y, false);
+        }
+    }
+    for y in 0..20 {
+        for x in 0..20 {
+            outer.set(38 + x, 38 + y, inner.get(x, y).unwrap());
+        }
+    }
+    let image = render_luma(&outer, &options(3, 2, false));
+    let detection = detect(&image);
+    assert_eq!((detection.symbols.len(), detection.nested), (0, 2));
+    assert!(find_symbols(&image).is_empty());
+    // Each symbol alone is found.
+    let alone = render_luma(&inner, &options(3, 2, false));
+    assert_single(&find_symbols(&alone), &inner, "inner alone");
+    let resampled = detect(&resample(&image, 1.3));
+    assert_eq!((resampled.symbols.len(), resampled.nested), (0, 2));
 }

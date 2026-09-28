@@ -49,7 +49,7 @@ fn header_only_png(width: u32, height: u32) -> Vec<u8> {
 }
 
 fn sample_png() -> Vec<u8> {
-    render_png(&a27(), &RenderOptions { module_px: 2, ..RenderOptions::default() }).unwrap()
+    render_png(&symbol_24(), &RenderOptions { module_px: 2, ..RenderOptions::default() }).unwrap()
 }
 
 #[test]

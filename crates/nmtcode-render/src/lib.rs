@@ -1,8 +1,11 @@
 //! PNG and SVG output of NMT Code symbols, with the optional bootstrap QR Code.
 //!
 //! The input is a finished [`ModuleGrid`] (quiet zone excluded, dark = `true`). The output is a
-//! canvas that holds the symbol, its quiet zone (specification 5.2) and, by default, the bootstrap
-//! QR Code of chapter 8 beside it.
+//! canvas that holds the symbol, its quiet zone (specification 5.2) and, when asked for, the
+//! bootstrap QR Code of chapter 8 beside it. The bootstrap is on by default only for the `print`
+//! profile (8.5): [`RenderOptions::print`] turns it on, [`RenderOptions::default`] leaves it off.
+//! [`RenderOptions::print_growth_dots`] shrinks the dark areas of the output against ink spread
+//! (1.5).
 //!
 //! - [`render_png`] writes a 1-bit greyscale PNG, black modules on white.
 //! - [`render_svg`] writes a compact SVG: runs of dark modules merged into one path.
@@ -13,6 +16,7 @@
 
 mod bootstrap;
 mod canvas;
+mod growth;
 mod layout;
 mod png_out;
 mod svg_out;
@@ -28,7 +32,8 @@ use nmtcode_core::ModuleGrid;
 pub const MIN_QUIET_ZONE: u32 = 2;
 /// Default quiet zone in modules (specification 5.2).
 pub const DEFAULT_QUIET_ZONE: u32 = 2;
-/// Default module size in pixels: the `screen` profile of specification 1.5.
+/// Default module size in pixels: the `screen` profile of specification 1.5 when the pixel
+/// density is unknown, 4 CSS pixels for an image shown at one image pixel per CSS pixel.
 pub const DEFAULT_MODULE_PX: u32 = 4;
 /// Smallest printed module of the `print` profile (specification 1.5), in millimetres.
 pub const PRINT_MIN_MODULE_MM: f64 = 0.4;
@@ -51,29 +56,30 @@ pub enum BootstrapLevel {
 /// Side of the NMT Code symbol on which the bootstrap QR Code sits (specification 8.4.3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BootstrapSide {
-    /// To the left, top edges aligned. The default when W ≥ H.
+    /// To the left, top edges aligned. The default when W > H.
     Left,
-    /// Above, left edges aligned. The default when H > W.
+    /// Above, left edges aligned. The default when H ≥ W.
     Above,
 }
 
 /// How a symbol is drawn.
 ///
-/// [`RenderOptions::default`] is the `screen` profile of specification 1.5: 4 pixels per module,
-/// a quiet zone of 2 modules and the bootstrap QR Code on (8.5).
+/// [`RenderOptions::default`] is the `screen` profile of specification 1.5 at an unknown pixel
+/// density: 4 pixels per module, a quiet zone of 2 modules and no bootstrap QR Code (8.5).
+/// [`RenderOptions::print`] is the `print` profile, with the bootstrap QR Code on.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenderOptions {
     /// Side of one module in pixels (PNG pixels, SVG user units). At least 1.
     pub module_px: u32,
     /// Quiet zone in modules on every side of the symbol. At least [`MIN_QUIET_ZONE`].
     pub quiet_zone: u32,
-    /// Whether to draw the bootstrap QR Code of chapter 8. On by default for static symbols
-    /// (8.5); set to `false` to leave it out.
+    /// Whether to draw the bootstrap QR Code of chapter 8. Off in [`RenderOptions::default`]
+    /// and on in [`RenderOptions::print`], the defaults of 8.5.
     pub bootstrap: bool,
     /// Error-correction level of the bootstrap QR Code. Default M (8.3).
     pub bootstrap_level: BootstrapLevel,
-    /// Side of the bootstrap QR Code. `None` picks the default of 8.4.3: left when W ≥ H,
-    /// above when H > W.
+    /// Side of the bootstrap QR Code. `None` picks the default of 8.4.3: left when W > H,
+    /// above when H ≥ W.
     pub bootstrap_side: Option<BootstrapSide>,
     /// Width of one bootstrap QR module in NMT Code modules (n of 8.4.1). `None` picks the
     /// smallest n allowed by 8.4.1; a value below that minimum is an error.
@@ -83,6 +89,14 @@ pub struct RenderOptions {
     /// 0.4 mm or more (8.4.1). When `None`, the output has no physical size and the bootstrap QR
     /// module is kept at 4 pixels or more.
     pub dpi: Option<u32>,
+    /// `print_growth_dots` of specification 1.5: the union of the dark areas of the output,
+    /// bootstrap QR Code included, is shrunk by this many pixels (printer dots) on every edge
+    /// that faces a light area, against ink spread. Edges between two dark modules do not move,
+    /// so no light seam appears. 0, the default, draws the modules as they are; 1 is the
+    /// RECOMMENDED value at 600 dpi on uncoated paper with an inkjet printer. Twice the value
+    /// must be below [`RenderOptions::module_px`]. [`render_modules`] ignores it: it works in
+    /// whole modules.
+    pub print_growth_dots: u32,
 }
 
 impl Default for RenderOptions {
@@ -90,11 +104,12 @@ impl Default for RenderOptions {
         Self {
             module_px: DEFAULT_MODULE_PX,
             quiet_zone: DEFAULT_QUIET_ZONE,
-            bootstrap: true,
+            bootstrap: false,
             bootstrap_level: BootstrapLevel::M,
             bootstrap_side: None,
             bootstrap_scale: None,
             dpi: None,
+            print_growth_dots: 0,
         }
     }
 }
@@ -102,7 +117,7 @@ impl Default for RenderOptions {
 impl RenderOptions {
     /// The `print` profile of specification 1.5 for a printer of `dpi` dots per inch: the
     /// smallest whole number of dots that is at least 0.4 mm and at least 4 dots, with the DPI
-    /// written into the output.
+    /// written into the output and the bootstrap QR Code on (8.5).
     ///
     /// # Errors
     ///
@@ -121,6 +136,7 @@ impl RenderOptions {
         Ok(Self {
             module_px: print_module_px(dpi, min_module_mm)?,
             dpi: Some(dpi),
+            bootstrap: true,
             ..Self::default()
         })
     }
@@ -154,7 +170,8 @@ pub fn print_module_px(dpi: u32, min_module_mm: f64) -> Result<u32, RenderError>
 
 /// Writes `grid` as a PNG: 1-bit greyscale, black modules on white, with the quiet zone and, when
 /// [`RenderOptions::bootstrap`] is on, the bootstrap QR Code. When [`RenderOptions::dpi`] is set,
-/// the PNG has a `pHYs` chunk with that density.
+/// the PNG has a `pHYs` chunk with that density. [`RenderOptions::print_growth_dots`] shrinks the
+/// dark areas by that many pixels on every edge that faces a light area.
 ///
 /// # Errors
 ///
@@ -167,7 +184,8 @@ pub fn render_png(grid: &ModuleGrid, options: &RenderOptions) -> Result<Vec<u8>,
 
 /// Writes `grid` as an SVG document. The drawing is one white rectangle and one black path in
 /// which runs of dark modules are merged into rectangles; `shape-rendering="crispEdges"`, a
-/// `<title>`, no scripts. The view box is in modules; the size is in millimetres when
+/// `<title>`, no scripts. The view box is in modules, or in pixels when
+/// [`RenderOptions::print_growth_dots`] is set; the size is in millimetres when
 /// [`RenderOptions::dpi`] is set and in pixels otherwise.
 ///
 /// # Errors
@@ -176,7 +194,7 @@ pub fn render_png(grid: &ModuleGrid, options: &RenderOptions) -> Result<Vec<u8>,
 /// canvas would be too large.
 pub fn render_svg(grid: &ModuleGrid, options: &RenderOptions) -> Result<String, RenderError> {
     let canvas = render_modules(grid, options)?;
-    Ok(svg_out::write(&canvas, options))
+    svg_out::write(&canvas, options).ok_or(RenderError::TooLarge)
 }
 
 /// Why a symbol could not be drawn.
@@ -202,6 +220,14 @@ pub enum RenderError {
     InvalidDpi,
     /// A module size in millimetres is not a finite number from 0.001 to 1000.
     InvalidModuleMm,
+    /// Twice [`RenderOptions::print_growth_dots`] is not below [`RenderOptions::module_px`]:
+    /// a single dark module would vanish (specification 1.5).
+    GrowthTooLarge {
+        /// The print growth compensation that was asked for, in pixels.
+        dots: u32,
+        /// The module size in pixels.
+        module_px: u32,
+    },
     /// [`RenderOptions::bootstrap_scale`] is below the smallest bootstrap module width that
     /// specification 8.4.1 allows for this module size.
     BootstrapScaleTooSmall {
@@ -235,6 +261,10 @@ impl fmt::Display for RenderError {
             Self::InvalidModuleMm => {
                 f.write_str("the module size in millimetres must be from 0.001 to 1000")
             }
+            Self::GrowthTooLarge { dots, module_px } => write!(
+                f,
+                "a print growth compensation of {dots} pixels is too large for {module_px}-pixel modules"
+            ),
             Self::BootstrapScaleTooSmall { requested, minimum } => write!(
                 f,
                 "a bootstrap module of {requested} modules is too small: at least {minimum} are needed"

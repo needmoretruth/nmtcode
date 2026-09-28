@@ -41,12 +41,28 @@ pub fn symbol_with_container(
     pad_message(&mut message, split.capacity()).unwrap();
     let stream = nmtcode_ecc::encode_stream(&split, &message).unwrap();
     let word = FormatWord::new(class, width, height, level, colour_profile, 0).unwrap();
-    layout.draw(word.encode(), &stream).unwrap()
+    layout.draw_copies(word.encode_copies(), &stream).unwrap()
 }
 
-/// A container of any lead byte and body, with a correct body length and CRC-32C (3.2.1, 3.7).
+/// A static container of a black-and-white level-0 symbol: any lead byte and body, the echo byte
+/// `00`, a correct body length and CRC-32C (3.2.1, 3.7).
 pub fn sealed_container(lead: u8, body: &[u8]) -> Vec<u8> {
-    let mut out = vec![lead];
+    sealed(&[lead, 0x00], body)
+}
+
+/// A static container of a colour-profile-1 level-0 symbol with 1 × 1 cells: echo byte `10`.
+pub fn sealed_colour_container(lead: u8, body: &[u8]) -> Vec<u8> {
+    sealed(&[lead, 0x10], body)
+}
+
+/// A transfer tile: lead byte, body length, body, CRC-32C, with no echo byte (3.3).
+pub fn sealed_tile(lead: u8, body: &[u8]) -> Vec<u8> {
+    sealed(&[lead], body)
+}
+
+/// The bytes before the body length, then Lb, the body and its CRC-32C.
+pub fn sealed(prefix: &[u8], body: &[u8]) -> Vec<u8> {
+    let mut out = prefix.to_vec();
     nmtcode_core::write_leb128(&mut out, u32::try_from(body.len()).unwrap());
     out.extend_from_slice(body);
     let crc = nmtcode_core::crc32c(&out);

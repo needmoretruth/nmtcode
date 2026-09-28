@@ -1,6 +1,6 @@
 //! Reed-Solomon error correction over GF(2^8) and block splitting for NMT Code.
 //!
-//! This crate implements chapter 4 of the NMT Code specification 0.1:
+//! This crate implements chapter 4 of the NMT Code specification 0.2:
 //!
 //! - [`gf`]: the field GF(2^8) with the field polynomial `0x11D` and α = `0x02` (4.2);
 //! - [`rs`]: the generator polynomial (4.3), systematic encoding (4.4) and a bounded-distance
@@ -29,7 +29,9 @@ pub enum EccError {
     /// The error-correction level is not 0, 1, 2 or 3 (4.5).
     InvalidLevel,
     /// The layer has fewer codewords than the minimum N of its level: 3 for levels 0 to 2 and 5
-    /// for level 3 (4.6). A reader maps this to `E_LAYER_TOO_SMALL`.
+    /// for level 3 (4.6). Every valid base layer has at least 20 codewords, and a colour layer
+    /// below 16 codewords makes its format word invalid (chapter 2, 2.3), so a reader never
+    /// meets this after it has chosen a format word.
     LayerTooSmall,
     /// A parity count is odd, below 2 or above 254 (4.2).
     InvalidParity,

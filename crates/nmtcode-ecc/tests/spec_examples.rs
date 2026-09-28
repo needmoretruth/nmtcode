@@ -27,12 +27,13 @@ fn share_permille(split: &BlockSplit) -> usize {
 #[test]
 fn smallest_symbol_at_each_level() {
     // 4.6, table "Smallest symbol at each level": N = 20 at every level.
-    // The last column, "largest content of one record, codec 0", is K minus the 7-byte
-    // smallest container of chapter 3 (3.2).
-    let expected = [(0u8, 4usize, 16usize, 9usize), (1, 6, 14, 7), (2, 10, 10, 3), (3, 12, 8, 1)];
+    // The last column, "largest content of one record, codec 0", is K minus the 8-byte
+    // smallest container of chapter 3 (3.2.6): lead byte, format echo byte, body length,
+    // content type and CRC-32C.
+    let expected = [(0u8, 4usize, 16usize, 8usize), (1, 6, 14, 6), (2, 10, 10, 2), (3, 12, 8, 0)];
     for (level, parity, capacity, largest_content) in expected {
         let s = split(20, level).unwrap();
-        assert_eq!(s.capacity() - 7, largest_content, "level {level}");
+        assert_eq!(s.capacity() - 8, largest_content, "level {level}");
         assert_eq!(s.block_count(), 1, "level {level}");
         assert_eq!(s.parity_per_block(), parity, "level {level}");
         assert_eq!(s.parity_total(), parity, "level {level}");
@@ -91,6 +92,65 @@ fn sample_splits_of_4_7() {
         assert_eq!(s.capacity(), capacity, "N = {n}, level {level}");
         assert_eq!(s.parity_total(), blocks * parity, "N = {n}, level {level}");
         assert_eq!(share_permille(&s), share, "N = {n}, level {level}");
+    }
+}
+
+/// The block count, the block lengths and the stream order depend on N alone, not on the level
+/// (4.6); chapter 3 (3.2.2) relies on this for the format echo byte.
+#[test]
+fn blocks_depend_on_n_alone() {
+    for n in (5..=20_000usize).step_by(7) {
+        let splits: Vec<BlockSplit> = (0..=3u8).map(|level| split(n, level).unwrap()).collect();
+        for s in &splits[1..] {
+            assert_eq!(s.block_count(), splits[0].block_count(), "N = {n}");
+            assert_eq!(lengths(s).0, lengths(&splits[0]).0, "N = {n}");
+        }
+    }
+}
+
+/// The probability that a symbol of `codewords` codewords at `level` fails when every module is
+/// wrong on its own with probability `module_error`: a codeword is wrong when any of its 8
+/// modules is (5.8), and a block fails with more than P/2 wrong codewords (4.9).
+fn failure_probability(codewords: usize, level: u8, module_error: f64) -> f64 {
+    let layer = split(codewords, level).unwrap();
+    let byte_error = 1.0 - (1.0 - module_error).powi(8);
+    let limit = u32::try_from(layer.parity_per_block() / 2).unwrap();
+    let block_fails = |len: usize| {
+        let len = u32::try_from(len).unwrap();
+        // P(at most `limit` wrong codewords) by the recurrence of the binomial terms.
+        let mut term = (1.0 - byte_error).powi(i32::try_from(len).unwrap());
+        let mut within = term;
+        for wrong in 0..limit {
+            term *= f64::from(len - wrong) / f64::from(wrong + 1) * byte_error / (1.0 - byte_error);
+            within += term;
+        }
+        1.0 - within
+    };
+    let survives: f64 = layer.blocks().map(|b| 1.0 - block_fails(b.len)).product();
+    1.0 - survives
+}
+
+/// The module-error tolerance table of 4.5: the share of independent module errors at which a
+/// symbol fails with probability 1%, in hundredths of a percent.
+#[test]
+fn module_error_tolerance_of_4_5() {
+    let rows: [(usize, [u32; 4]); 5] = [
+        (20, [29, 56, 127, 171]),
+        (98, [47, 113, 227, 293]),
+        (468, [53, 134, 255, 325]),
+        (1967, [48, 121, 241, 306]),
+        (12_843, [40, 110, 222, 289]),
+    ];
+    for (n, expected) in rows {
+        for (level, &hundredths) in (0u8..).zip(expected.iter()) {
+            let (mut lo, mut hi) = (0.0f64, 0.5f64);
+            for _ in 0..50 {
+                let mid = f64::midpoint(lo, hi);
+                if failure_probability(n, level, mid) > 0.01 { hi = mid } else { lo = mid }
+            }
+            let got = (lo * 10_000.0).round();
+            assert!((got - f64::from(hundredths)).abs() < 0.5, "N = {n}, level {level}: {got}");
+        }
     }
 }
 
@@ -235,13 +295,13 @@ fn stream_order_of_4_11_2() {
 
 #[test]
 fn chapter_4_values_of_annex_a_2() {
-    // A.2.3: N = 42 at level 0 gives B = 1, n = 42, P = 8, K = 34.
-    let s = split(42, 0).unwrap();
-    assert_eq!((s.block_count(), s.parity_per_block(), s.capacity()), (1, 8, 34));
+    // A.2.3: N = 40 at level 0 gives B = 1, n = 40, P = 6, K = 34.
+    let s = split(40, 0).unwrap();
+    assert_eq!((s.block_count(), s.parity_per_block(), s.capacity()), (1, 6, 34));
     // A.2.4: message, parity and codeword stream.
-    let message = hex("03 16 00 28 02 DE A7 40 BA 96 DC EE AA EE 6B EF \
-         DF 35 76 47 AE BA F7 91 33 56 F1 6E EC 11 EC 11 EC 11");
-    let parity = hex("5F BF C3 A7 FC 87 2F A6");
+    let message = hex("03 00 16 00 28 02 DE A7 40 BA 96 DC EE AA EE 6B \
+         EF DF 35 76 47 AE BA F7 91 13 7D CF C4 EC 11 EC 11 EC");
+    let parity = hex("83 8C FB 28 C9 ED");
     let stream = encode_stream(&s, &message).unwrap();
     assert_eq!(&stream[..34], message.as_slice());
     assert_eq!(&stream[34..], parity.as_slice());

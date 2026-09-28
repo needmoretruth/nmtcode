@@ -14,6 +14,9 @@ use crate::{CodecError, check_decoded_len, leb128, to_usize};
 /// Codec ID.
 pub const ID: u32 = 3;
 
+/// The expansion bound of 6.4 rule 2 for codec 3: `L` ≤ 64 · (`Lc` + 4).
+pub const EXPANSION_MAX: u32 = 64;
+
 /// `TOKEN_COUNT` of 6.8.1.
 pub const TOKEN_COUNT: usize = 240;
 
@@ -653,7 +656,7 @@ impl Low {
 
     /// The coded field: the first `m` bytes of the smallest multiple of
     /// 2^(8(`M`−`m`)) at or above `low` that is below `low` + `range`, for the
-    /// smallest such `m`.
+    /// smallest such `m`. This is the canonical termination of 6.8.5.
     fn finish(self, range: u32) -> Vec<u8> {
         let low = self.digits;
         let mut last = low.clone();
@@ -713,8 +716,11 @@ pub fn encode(content: &[u8], model: &Model) -> Vec<u8> {
 /// # Errors
 ///
 /// - [`CodecError::Malformed`]: `decoded_len` > [`crate::MAX_CONTENT_LEN_V0`];
-///   `code / r` ≥ 2^16; a token that would go beyond `decoded_len` bytes; bytes
-///   of `bytes` the decoder never read; a last byte of `00`.
+///   `decoded_len` > [`EXPANSION_MAX`] · (`bytes.len()` + 4), checked before
+///   anything is allocated; `code / r` ≥ 2^16; a token that would go beyond
+///   `decoded_len` bytes; bytes of `bytes` the decoder never read; a coded
+///   field that is not the canonical termination of its final interval (for
+///   example the canonical field with a byte `01` appended).
 /// - [`CodecError::TooLarge`]: `decoded_len` > `limit`.
 pub fn decode(
     model: &Model,
@@ -723,6 +729,9 @@ pub fn decode(
     limit: u32,
 ) -> Result<Vec<u8>, CodecError> {
     check_decoded_len(decoded_len, limit)?;
+    if !crate::within_expansion(decoded_len, bytes.len(), EXPANSION_MAX) {
+        return Err(CodecError::Malformed);
+    }
     let total = to_usize(decoded_len)?;
     // Zero extension: C[i] = 0 for i ≥ Lc.
     let byte_at = |index: usize| u32::from(bytes.get(index).copied().unwrap_or(0));
@@ -753,7 +762,27 @@ pub fn decode(
         }
         out.extend_from_slice(piece.as_slice());
     }
-    if bytes.len() > next || bytes.last() == Some(&0) {
+    if bytes.len() > next {
+        return Err(CodecError::Malformed);
+    }
+    // Canonical termination: low = V − code, with V the first `next` bytes of
+    // the zero-extended coded field; only the encoder's shortest value in the
+    // final interval is accepted.
+    let mut low = bytes.to_vec();
+    low.resize(next, 0);
+    let mut borrow = u64::from(code);
+    for digit in low.iter_mut().rev() {
+        if borrow == 0 {
+            break;
+        }
+        let value = u64::from(*digit);
+        let take = borrow & 0xFF;
+        let (difference, carry) =
+            if value >= take { (value - take, 0) } else { (value + 256 - take, 1) };
+        *digit = low_byte(difference);
+        borrow = (borrow >> 8) + carry;
+    }
+    if borrow != 0 || (Low { digits: low }).finish(range) != bytes {
         return Err(CodecError::Malformed);
     }
     Ok(out)

@@ -25,6 +25,43 @@ fn transforms(a: [[bool; 3]; 3]) -> Vec<[[bool; 3]; 3]> {
     all
 }
 
+/// The four pictures of 5.3.1, row by row, `#` dark.
+#[test]
+fn finder_pictures_of_5_3_1() {
+    let pictures = [
+        (Corner::TopLeft, ["#####", "#oo##", "#oo##", "#####", "#####"]),
+        (Corner::TopRight, ["#####", "##oo#", "#####", "##oo#", "#####"]),
+        (Corner::BottomLeft, ["#####", "#####", "#####", "#####", "#####"]),
+        (Corner::BottomRight, ["#####", "##oo#", "#ooo#", "#ooo#", "#####"]),
+    ];
+    for (corner, rows) in pictures {
+        let drawn: Vec<String> = corner
+            .pattern()
+            .iter()
+            .map(|row| row.iter().map(|&d| if d { '#' } else { 'o' }).collect())
+            .collect();
+        assert_eq!(drawn, rows, "{corner:?}");
+    }
+}
+
+/// 5.3.2 property 1: the smallest distance between two different finders, over the eight
+/// transforms, is exactly 4.
+#[test]
+fn smallest_distance_between_finders_is_four() {
+    let mut smallest = 9;
+    for f in Corner::ALL {
+        for g in Corner::ALL {
+            if f != g {
+                for t in transforms(g.inner()) {
+                    let d = (0..9).filter(|&i| f.inner()[i / 3][i % 3] != t[i / 3][i % 3]).count();
+                    smallest = smallest.min(d);
+                }
+            }
+        }
+    }
+    assert_eq!(smallest, 4);
+}
+
 /// 5.3.2 property 1: two different finders differ in at least 4 of 9 inner modules under every
 /// transform.
 #[test]
@@ -47,7 +84,7 @@ fn inner_patterns_differ_in_four_modules_under_every_transform() {
 #[test]
 fn finders_are_drawn_in_their_corners() {
     let layout = Layout::new(28, 40).unwrap();
-    let grid = layout.draw(0, &vec![0; layout.codeword_count()]).unwrap();
+    let grid = layout.draw_copies([0, 0], &vec![0; layout.codeword_count()]).unwrap();
     for corner in Corner::ALL {
         let (ox, oy) = corner.origin(28, 40).unwrap();
         for dy in 0..5 {
@@ -187,7 +224,8 @@ fn drawn_symbols_have_no_qr_signature_on_a_finder() {
                         }
                     })
                     .collect();
-                let grid = layout.draw(format, &stream).unwrap();
+                let grid =
+                    layout.draw_copies([format, !format & ((1 << 47) - 1)], &stream).unwrap();
                 check_lines(&layout, &grid);
             }
         }

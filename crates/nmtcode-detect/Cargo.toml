@@ -12,6 +12,7 @@ categories.workspace = true
 
 [dependencies]
 nmtcode-core = { workspace = true }
+nmtcode-symbol = { workspace = true }
 png = { workspace = true }
 
 [dev-dependencies]

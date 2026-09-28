@@ -65,7 +65,7 @@ fn dictionary_id_on_a_codec_without_one() {
 #[test]
 fn dictionary_kind_check_error_exists() {
     // The kind check itself is exercised with a test registry inside the crate
-    // (dictionary::tests); in 0.1 no ID can reach it from `decode`.
+    // (dictionary::tests); in 0.2 no ID can reach it from `decode`.
     assert_ne!(DictionaryMismatch, UnknownDictionary);
     assert_eq!(DictionaryMismatch.spec_name(), "E_DICTIONARY_MISMATCH");
 }
@@ -185,7 +185,26 @@ fn brotli_output_must_be_exactly_l() {
     let bomb = codec5::encode(&zeros).unwrap();
     assert!(bomb.len() < 32);
     assert_eq!(d(5, 0, 10, &bomb), Err(Malformed));
-    assert_eq!(d(5, 0, 4 << 20, &bomb).map(|v| v.len()), Ok(4 << 20));
+}
+
+/// 6.4 rule 2: L ≤ 256 · (Lc + 4) for codec 5, checked before allocation, and
+/// the encoder offers no candidate beyond it.
+#[cfg(feature = "brotli")]
+#[test]
+fn brotli_expansion_bound() {
+    let zeros = vec![0u8; 4 << 20];
+    let bomb = codec5::encode(&zeros).unwrap();
+    assert_eq!(d(5, 0, 4 << 20, &bomb), Err(Malformed));
+    let all = nmtcode_payload::candidates(&zeros, &nmtcode_payload::EncodeOptions::ALL);
+    assert!(all.iter().all(|c| c.codec != 5 && c.codec != 3), "{:?}", all.len());
+    // At the bound itself the stream is decoded.
+    let content = vec![b'a'; 4000];
+    let coded = codec5::encode(&content).unwrap();
+    let bound = codec5::EXPANSION_MAX as usize * (coded.len() + 4);
+    assert!(content.len() <= bound);
+    assert_eq!(d(5, 0, 4000, &coded).map(|v| v.len()), Ok(4000));
+    assert!(nmtcode_payload::within_expansion(1024, 0, 256));
+    assert!(!nmtcode_payload::within_expansion(1025, 0, 256));
 }
 
 // ---- 6.4 rule 5: out-of-range values, reserved codes, trailing data, padding
@@ -277,6 +296,14 @@ fn codec3_out_of_range_value_and_trailing_data() {
     assert_eq!(d(3, 0, 1, &[0xFF, 0xFF, 0xFF, 0xFF]), Err(Malformed));
     let content = b"https://github.com/needmoretruth/nmtcode";
     let good = codec3::encode(content, &codec3::Model::model0());
+    // The test vector of 6.8.5: the 19-byte field of 6.12.3 with a byte 01 appended. The
+    // decoder reads 22 bytes (M = 22), so the old checks (Lc ≤ p, no final 00) passed it; the
+    // canonical-termination check rejects it.
+    let mut appended = good.clone();
+    appended.push(0x01);
+    assert_eq!(appended.len(), 20);
+    assert_eq!(d(3, 0, 40, &good), Ok(content.to_vec()));
+    assert_eq!(d(3, 0, 40, &appended), Err(Malformed));
     // A trailing 0x00 byte.
     let mut zero = good.clone();
     zero.push(0x00);
@@ -291,17 +318,36 @@ fn codec3_out_of_range_value_and_trailing_data() {
     assert_eq!(d(3, 0, 0, &[0x01, 0x00]), Err(Malformed));
 }
 
-/// The normative decoder of 6.8.5 accepts more than one coded field for one
-/// symbol sequence: its two final checks bound `Lc` by `p` and forbid a final
-/// 0x00, but do not force the shortest field. This test pins that normative
-/// behaviour (see the report: 6.8.5 says the checks make `Lc` canonical).
+/// 6.8.5: the decoder accepts only the canonical termination, the one coded
+/// field the encoder writes for a symbol sequence. `55 55 55 55` lies in the
+/// final interval of `a` as well, and `56` is the canonical field.
 #[test]
-fn codec3_normative_decoder_accepts_a_longer_field() {
+fn codec3_accepts_only_the_canonical_termination() {
     let canonical = codec3::encode(b"a", &codec3::Model::model0());
     assert_eq!(canonical, [0x56]);
     assert_eq!(d(3, 0, 1, &[0x56]), Ok(b"a".to_vec()));
-    assert_eq!(d(3, 0, 1, &[0x55, 0x55, 0x55, 0x55]), Ok(b"a".to_vec()));
+    assert_eq!(d(3, 0, 1, &[0x55, 0x55, 0x55, 0x55]), Err(Malformed));
+    assert_eq!(d(3, 0, 1, &[0x57]), Err(Malformed));
+    assert_eq!(d(3, 0, 1, &[0x56, 0x01]), Err(Malformed));
     assert_eq!(d(3, 0, 1, &[0x55, 0x55, 0x55, 0x55, 0x55]), Err(Malformed));
+    // L = 0: only the empty field.
+    assert_eq!(d(3, 0, 0, &[]), Ok(Vec::new()));
+    assert_eq!(d(3, 0, 0, &[0x01]), Err(Malformed));
+}
+
+/// 6.4 rule 2: L ≤ 64 · (Lc + 4) for codec 3, checked before allocation.
+#[test]
+fn codec3_expansion_bound() {
+    // Content of NUL bytes codes to an empty field under model 0 (low stays 0).
+    let zeros = vec![0u8; 256];
+    assert!(codec3::encode(&zeros, &codec3::Model::model0()).is_empty());
+    assert_eq!(d(3, 0, 256, &[]), Ok(zeros.clone()));
+    assert_eq!(d(3, 0, 257, &[]), Err(Malformed));
+    assert_eq!(d(3, 0, 16 << 20, &[]), Err(Malformed));
+    // The encoder offers no codec-3 candidate beyond the bound.
+    let longer = vec![0u8; 257];
+    let all = nmtcode_payload::candidates(&longer, &nmtcode_payload::EncodeOptions::ALL);
+    assert!(all.iter().all(|c| c.codec != 3));
 }
 
 #[test]

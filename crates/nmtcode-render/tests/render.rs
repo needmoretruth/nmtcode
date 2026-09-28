@@ -21,31 +21,35 @@ use nmtcode_render::{
 use proptest::prelude::*;
 
 /// Specification annex A, A.2.7.
-const A27_ROWS: [&str; 24] = [
-    "#####.#.#.#..#..#..#####",
-    "#..##...##.##...#..##..#",
-    "#..##.######.#####.#####",
-    "#####..##....##....##..#",
-    "#####.##.#..######.#####",
-    ".......#####.#####......",
-    ".#....##.##.#......##.#.",
-    "#.##.#..##..#.###.#..#..",
-    "..###.######.##..###..##",
-    ".###.###..#..##.##.##...",
-    "....##.#.........##..#.#",
-    "#...#.###.###.#..#.#.#..",
-    "#..######.##....##...##.",
-    "..###..#..#...##....#...",
-    "#.###.#.#.#...#.#.#.###.",
-    "#..#..#..###.#.###.###..",
-    ".#....#######.##..#.##.#",
-    ".##..###...#...##.....#.",
-    "......##.#..##.##.......",
-    "#####...#####.#.##.#####",
-    "#####.###..###.##..#..##",
-    "#####..##.##.#####.#.#.#",
-    "#####..##..#####...##..#",
-    "#####.###...##.#.#.#####",
+const A27_ROWS: [&str; 28] = [
+    "#####.#.#...#..#####",
+    "#..##...##..##.##..#",
+    "#..##.###.#.#..#####",
+    "#####.###.#....##..#",
+    "#####.##.#..##.#####",
+    ".......#..#.........",
+    ".###...#..#.##....#.",
+    "#.#.#..#.#####..#.##",
+    ".#....##..##...#####",
+    "...#.#.#.#..#.##..##",
+    "...##.#..#.#.#...###",
+    "#.###.#..#..#.#.##.#",
+    "#..###..#...#.####..",
+    "...##...#.#.##..#..#",
+    "#...##...##..#.###.#",
+    "##.#.#..#.#..####..#",
+    "....#.##...##.##.#..",
+    "####....###.####...#",
+    "#....#.###....#.##.#",
+    ".##..######......###",
+    "..####.#.#..####.#..",
+    ".###.#....##..###.##",
+    "......########......",
+    "#####..#.#.##..#####",
+    "#####.##.#..##.##..#",
+    "#####.....#..#.#...#",
+    "#####.########.#...#",
+    "#####.#######..#####",
 ];
 
 fn a27() -> ModuleGrid {
@@ -71,19 +75,34 @@ fn opts(module_px: u32, quiet_zone: u32, bootstrap: bool) -> RenderOptions {
     RenderOptions { module_px, quiet_zone, bootstrap, ..RenderOptions::default() }
 }
 
+/// The defaults with the bootstrap QR Code turned on.
+fn with_qr() -> RenderOptions {
+    RenderOptions { bootstrap: true, ..RenderOptions::default() }
+}
+
 // ---------------------------------------------------------------------------------------------
 // Placement (8.4, 8.8.2)
 
 #[test]
 fn placement_8_8_2_screen() {
+    // W = H: the QR Code goes above (8.4.3).
     let l = layout(64, 64, &opts(4, 2, true)).unwrap();
     let b = l.bootstrap.unwrap();
-    assert_eq!((b.side, b.version, b.scale, b.gap, b.size), (BootstrapSide::Left, 3, 1, 4, 29));
-    // QR occupies −33 ≤ x < −4, 0 ≤ y < 29.
+    assert_eq!((b.side, b.version, b.scale, b.gap, b.size), (BootstrapSide::Above, 3, 1, 4, 29));
+    // QR occupies 0 ≤ x < 29, −33 ≤ y < −4.
+    assert_eq!((b.x, b.x + i64::from(b.size), b.y, b.y + i64::from(b.size)), (0, 29, -33, -4));
+    // Canvas x −4 … 66, y −37 … 66: 70 × 103, 280 × 412 px.
+    assert_eq!((l.canvas_x, l.canvas_y, l.canvas_width, l.canvas_height), (-4, -37, 70, 103));
+    assert_eq!((l.pixel_width(), l.pixel_height()), (280, 412));
+}
+
+#[test]
+fn placement_8_8_2_wide() {
+    let l = layout(96, 48, &opts(4, 2, true)).unwrap();
+    let b = l.bootstrap.unwrap();
+    assert_eq!((b.side, b.scale, b.gap, b.size), (BootstrapSide::Left, 1, 4, 29));
     assert_eq!((b.x, b.x + i64::from(b.size), b.y, b.y + i64::from(b.size)), (-33, -4, 0, 29));
-    // Canvas x −37 … 66, y −4 … 66: 103 × 70, 412 × 280 px.
-    assert_eq!((l.canvas_x, l.canvas_y, l.canvas_width, l.canvas_height), (-37, -4, 103, 70));
-    assert_eq!((l.pixel_width(), l.pixel_height()), (412, 280));
+    assert_eq!((l.canvas_x, l.canvas_y, l.canvas_width, l.canvas_height), (-37, -4, 135, 54));
 }
 
 #[test]
@@ -98,15 +117,15 @@ fn placement_8_8_2_tall() {
 #[test]
 fn placement_8_8_2_print() {
     // 0.25 mm modules: 10 dots at 1016 dpi.
-    let options = RenderOptions { module_px: 10, dpi: Some(1016), ..RenderOptions::default() };
+    let options = RenderOptions { module_px: 10, dpi: Some(1016), ..with_qr() };
     let l = layout(80, 80, &options).unwrap();
     let b = l.bootstrap.unwrap();
-    assert_eq!((b.side, b.scale, b.gap, b.size), (BootstrapSide::Left, 2, 8, 58));
-    assert_eq!((b.x, b.x + i64::from(b.size), b.y, b.y + i64::from(b.size)), (-66, -8, 0, 58));
-    assert_eq!((l.canvas_x, l.canvas_y, l.canvas_width, l.canvas_height), (-74, -8, 156, 90));
-    // 39.0 × 22.5 mm.
+    assert_eq!((b.side, b.scale, b.gap, b.size), (BootstrapSide::Above, 2, 8, 58));
+    assert_eq!((b.x, b.x + i64::from(b.size), b.y, b.y + i64::from(b.size)), (0, 58, -66, -8));
+    assert_eq!((l.canvas_x, l.canvas_y, l.canvas_width, l.canvas_height), (-8, -74, 90, 156));
+    // 22.5 × 39.0 mm.
     let svg = render_svg(&random_grid(80, 80, 1), &options).unwrap();
-    assert!(svg.contains(r#"width="39mm" height="22.5mm""#), "{}", &svg[..300]);
+    assert!(svg.contains(r#"width="22.5mm" height="39mm""#), "{}", &svg[..300]);
     // QR module 0.5 mm, QR 14.5 mm wide, gap 2 mm, with modules of 250 µm.
     assert_eq!(b.scale * 250, 500);
     assert_eq!(b.size * 250, 14_500);
@@ -115,15 +134,15 @@ fn placement_8_8_2_print() {
 
 #[test]
 fn default_side_follows_the_shorter_side() {
-    let side = |w, h| layout(w, h, &RenderOptions::default()).unwrap().bootstrap.unwrap().side;
-    assert_eq!(side(20, 20), BootstrapSide::Left);
+    let side = |w, h| layout(w, h, &with_qr()).unwrap().bootstrap.unwrap().side;
+    assert_eq!(side(20, 20), BootstrapSide::Above);
+    assert_eq!(side(64, 64), BootstrapSide::Above);
+    assert_eq!(side(24, 20), BootstrapSide::Left);
     assert_eq!(side(100, 20), BootstrapSide::Left);
     assert_eq!(side(20, 24), BootstrapSide::Above);
-    let forced =
-        RenderOptions { bootstrap_side: Some(BootstrapSide::Above), ..RenderOptions::default() };
+    let forced = RenderOptions { bootstrap_side: Some(BootstrapSide::Above), ..with_qr() };
     assert_eq!(layout(64, 64, &forced).unwrap().bootstrap.unwrap().side, BootstrapSide::Above);
-    let forced =
-        RenderOptions { bootstrap_side: Some(BootstrapSide::Left), ..RenderOptions::default() };
+    let forced = RenderOptions { bootstrap_side: Some(BootstrapSide::Left), ..with_qr() };
     assert_eq!(layout(20, 64, &forced).unwrap().bootstrap.unwrap().side, BootstrapSide::Left);
 }
 
@@ -147,10 +166,9 @@ fn scale_of_8_4_1() {
     assert_eq!(scale(&opts(1, 2, true)), 4);
     let print = RenderOptions::print(600).unwrap();
     assert_eq!(scale(&print), 1);
-    let bigger = RenderOptions { bootstrap_scale: Some(3), ..RenderOptions::default() };
+    let bigger = RenderOptions { bootstrap_scale: Some(3), ..with_qr() };
     assert_eq!(scale(&bigger), 3);
-    let smaller =
-        RenderOptions { module_px: 2, bootstrap_scale: Some(1), ..RenderOptions::default() };
+    let smaller = RenderOptions { module_px: 2, bootstrap_scale: Some(1), ..with_qr() };
     assert_eq!(
         layout(64, 64, &smaller),
         Err(RenderError::BootstrapScaleTooSmall { requested: 1, minimum: 2 })
@@ -162,11 +180,20 @@ fn levels_q_and_h() {
     for (level, version, side) in
         [(BootstrapLevel::M, 3, 29), (BootstrapLevel::Q, 4, 33), (BootstrapLevel::H, 5, 37)]
     {
-        let options = RenderOptions { bootstrap_level: level, ..RenderOptions::default() };
+        let options = RenderOptions { bootstrap_level: level, ..with_qr() };
         let b = layout(64, 64, &options).unwrap().bootstrap.unwrap();
         assert_eq!((b.version, b.size), (version, side));
         assert_eq!(bootstrap_qr(level).unwrap().width(), side);
     }
+}
+
+#[test]
+fn bootstrap_is_on_by_default_only_for_print() {
+    // 8.5: on for the print profile, off for the screen defaults.
+    assert!(!RenderOptions::default().bootstrap);
+    assert_eq!(layout(24, 24, &RenderOptions::default()).unwrap().bootstrap, None);
+    assert!(RenderOptions::print(600).unwrap().bootstrap);
+    assert!(layout(24, 24, &RenderOptions::print(600).unwrap()).unwrap().bootstrap.is_some());
 }
 
 #[test]
@@ -237,17 +264,10 @@ fn canvas_holds_symbol_qr_and_nothing_else() {
         (a27(), opts(1, 2, true)),
         (random_grid(64, 64, 3), opts(4, 2, true)),
         (random_grid(48, 96, 4), opts(4, 2, true)),
-        (
-            random_grid(80, 80, 5),
-            RenderOptions { module_px: 10, dpi: Some(1016), ..RenderOptions::default() },
-        ),
+        (random_grid(80, 80, 5), RenderOptions { module_px: 10, dpi: Some(1016), ..with_qr() }),
         (
             random_grid(20, 20, 6),
-            RenderOptions {
-                bootstrap_level: BootstrapLevel::H,
-                quiet_zone: 9,
-                ..RenderOptions::default()
-            },
+            RenderOptions { bootstrap_level: BootstrapLevel::H, quiet_zone: 9, ..with_qr() },
         ),
         (random_grid(20, 20, 7), opts(5, 2, false)),
     ] {
@@ -363,7 +383,7 @@ fn drawn_bootstrap_carries_the_codewords_of_8_8_1() {
     for options in [
         opts(4, 2, true),
         opts(2, 2, true),
-        RenderOptions { module_px: 10, dpi: Some(1016), ..RenderOptions::default() },
+        RenderOptions { module_px: 10, dpi: Some(1016), ..with_qr() },
     ] {
         let canvas = render_modules(&a27(), &options).unwrap();
         let qr = qr_from_canvas(&canvas);
@@ -602,10 +622,10 @@ fn svg_is_well_formed_and_covers_exactly_the_dark_modules() {
     check_svg(&random_grid(48, 96, 12), &opts(2, 2, true));
     check_svg(
         &random_grid(80, 80, 13),
-        &RenderOptions { module_px: 10, dpi: Some(1016), ..RenderOptions::default() },
+        &RenderOptions { module_px: 10, dpi: Some(1016), ..with_qr() },
     );
     let svg = render_svg(&a27(), &RenderOptions::default()).unwrap();
-    assert!(svg.contains("<title>NMT Code, 24 × 24 modules</title>"));
+    assert!(svg.contains("<title>NMT Code, 20 × 28 modules</title>"));
     assert!(!svg.contains("QR"), "no trademark word in the output");
 }
 
@@ -664,15 +684,99 @@ fn option_errors() {
         render_png(&grid, &opts(4, 1, true)),
         Err(RenderError::QuietZoneTooSmall { quiet_zone: 1 })
     );
-    let zero_dpi = RenderOptions { dpi: Some(0), ..RenderOptions::default() };
+    let zero_dpi = RenderOptions { dpi: Some(0), ..with_qr() };
     assert_eq!(render_svg(&grid, &zero_dpi), Err(RenderError::InvalidDpi));
     assert_eq!(render_png(&grid, &opts(1 << 20, 2, true)), Err(RenderError::TooLarge));
     assert_eq!(render_png(&grid, &opts(4, u32::MAX, true)), Err(RenderError::TooLarge));
-    let huge_scale = RenderOptions { bootstrap_scale: Some(u32::MAX), ..RenderOptions::default() };
+    let huge_scale = RenderOptions { bootstrap_scale: Some(u32::MAX), ..with_qr() };
     assert_eq!(render_svg(&grid, &huge_scale), Err(RenderError::TooLarge));
     for e in [RenderError::TooLarge, RenderError::Bootstrap, RenderError::Png("x".into())] {
         assert!(!e.to_string().is_empty());
     }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Print growth compensation (1.5)
+
+/// The canvas as pixels with the dark area eroded by `k` pixels: a pixel stays dark when every
+/// pixel within `k` of it in x and y is dark; outside the canvas is light.
+fn eroded_pixels(canvas: &Canvas, s: u32, k: u32) -> Vec<bool> {
+    let (w, h) = (canvas.modules.width() * s, canvas.modules.height() * s);
+    let dark = |x: i64, y: i64| {
+        x >= 0
+            && y >= 0
+            && x < i64::from(w)
+            && y < i64::from(h)
+            && canvas.modules.get(x as u32 / s, y as u32 / s) == Some(true)
+    };
+    let k = i64::from(k);
+    let mut out = Vec::new();
+    for y in 0..i64::from(h) {
+        for x in 0..i64::from(w) {
+            out.push((-k..=k).all(|dy| (-k..=k).all(|dx| dark(x + dx, y + dy))));
+        }
+    }
+    out
+}
+
+#[test]
+fn print_growth_dots_erodes_the_dark_union() {
+    for (grid, module_px, k, bootstrap) in [
+        (a27(), 3, 1, false),
+        (a27(), 10, 1, true),
+        (a27(), 10, 4, false),
+        (random_grid(20, 28, 21), 5, 2, true),
+    ] {
+        let options = RenderOptions {
+            module_px,
+            bootstrap,
+            print_growth_dots: k,
+            ..RenderOptions::default()
+        };
+        let canvas = render_modules(&grid, &options).unwrap();
+        let expected = eroded_pixels(&canvas, module_px, k);
+        let png = decode(&render_png(&grid, &options).unwrap());
+        assert_eq!(png.black, expected, "PNG, {module_px} px, k {k}");
+
+        // The SVG, in pixel units, covers exactly the same pixels.
+        let svg = render_svg(&grid, &options).unwrap();
+        let elements = parse_xml(&svg);
+        let (pw, ph) = (png.width, png.height);
+        assert_eq!(attr(&elements[0], "viewBox"), Some(format!("0 0 {pw} {ph}").as_str()));
+        let (raster, _) = rasterise(attr(&elements[3], "d").unwrap(), pw, ph);
+        let covered: Vec<bool> = (0..ph)
+            .flat_map(|y| (0..pw).map(move |x| (x, y)))
+            .map(|(x, y)| raster.get(x, y) == Some(true))
+            .collect();
+        assert_eq!(covered, expected, "SVG, {module_px} px, k {k}");
+    }
+    // Two touching dark modules keep no seam between them; their outer edges lose k pixels.
+    let mut pair = ModuleGrid::new(20, 20).unwrap();
+    pair.set(5, 5, true);
+    pair.set(6, 5, true);
+    let options = RenderOptions { module_px: 10, print_growth_dots: 2, ..RenderOptions::default() };
+    let png = decode(&render_png(&pair, &options).unwrap());
+    // Pixel row 5 of module row 5, with the 2-module quiet zone: y = (2 + 5) · 10 + 5.
+    let y = (2 + 5) * 10 + 5;
+    let dark: Vec<u32> =
+        (0..png.width).filter(|&x| png.black[(y * png.width + x) as usize]).collect();
+    assert_eq!((dark.first(), dark.last(), dark.len()), (Some(&72), Some(&87), 16));
+    assert_eq!(RenderOptions::default().print_growth_dots, 0);
+}
+
+#[test]
+fn print_growth_dots_must_leave_every_module_visible() {
+    let grid = a27();
+    for (module_px, k) in [(4, 2), (4, 3), (1, 1), (10, 5)] {
+        let options = RenderOptions { module_px, print_growth_dots: k, ..RenderOptions::default() };
+        assert_eq!(
+            render_png(&grid, &options),
+            Err(RenderError::GrowthTooLarge { dots: k, module_px })
+        );
+    }
+    let fine = RenderOptions { module_px: 5, print_growth_dots: 2, ..RenderOptions::default() };
+    assert!(render_png(&grid, &fine).is_ok());
+    assert!(!RenderError::GrowthTooLarge { dots: 3, module_px: 4 }.to_string().is_empty());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -702,6 +806,7 @@ proptest! {
             bootstrap_side: side,
             bootstrap_scale: None,
             dpi,
+            print_growth_dots: 0,
         };
         let canvas = render_modules(&grid, &options).unwrap();
         check_canvas(&grid, &canvas);

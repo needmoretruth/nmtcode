@@ -20,9 +20,9 @@ fn lower_hex(bytes: &[u8]) -> String {
     })
 }
 
-/// The whole container of 03-container-and-records.md (3.2) for a
-/// single-record container with content type 1: lead byte, body length, codec
-/// escape, dictionary ID, decoded length, content type, content, CRC-32C.
+/// The whole container of chapter 3 (3.2) for a single-record container with
+/// content type 1: lead byte, format echo byte, body length, codec escape,
+/// dictionary ID, decoded length, content type, content, CRC-32C.
 fn container_size(coded: &Coded) -> usize {
     let mut header = 1; // content type 1
     if coded.codec >= 15 {
@@ -35,7 +35,7 @@ fn container_size(coded: &Coded) -> usize {
         header += leb128::encoded_len(coded.decoded_len);
     }
     let body = header + coded.bytes.len();
-    1 + leb128::encoded_len(u32::try_from(body).unwrap()) + body + 4
+    2 + leb128::encoded_len(u32::try_from(body).unwrap()) + body + 4
 }
 
 #[test]
@@ -134,20 +134,20 @@ fn candidate_sizes_and_selection_6_12_5() {
     let rows: [Row; 4] = [
         (
             "0123456789",
-            [Some((10, 17)), Some((5, 13)), Some((7, 15)), Some((9, 18)), Some((9, 17))],
+            [Some((10, 18)), Some((5, 14)), Some((7, 16)), Some((9, 19)), Some((9, 18))],
             1,
         ),
         (
             "HTTPS://EXAMPLE.COM/ABC",
-            [Some((23, 30)), None, Some((16, 24)), Some((16, 25)), Some((21, 29))],
+            [Some((23, 31)), None, Some((16, 25)), Some((16, 26)), Some((21, 30))],
             2,
         ),
         (
             "https://github.com/needmoretruth/nmtcode",
-            [Some((40, 47)), None, None, Some((19, 28)), Some((36, 44))],
+            [Some((40, 48)), None, None, Some((19, 29)), Some((36, 45))],
             3,
         ),
-        ("안녕하세요 NMT Code", [Some((24, 31)), None, None, Some((35, 44)), Some((18, 26))], 4),
+        ("안녕하세요 NMT Code", [Some((24, 32)), None, None, Some((35, 45)), Some((18, 27))], 4),
     ];
     for (content, expected, chosen) in rows {
         let all = candidates(content.as_bytes(), &EncodeOptions::default());
@@ -271,7 +271,7 @@ fn registry_entries_6_11() {
     ids.sort_unstable();
     ids.dedup();
     assert_eq!(ids.len(), dictionary::REGISTRY.len());
-    assert_eq!(dictionary::REGISTRY_REVISION, "0.1");
+    assert_eq!(dictionary::REGISTRY_REVISION, "0.2");
     assert!(dictionary::REGISTRY.is_empty());
 }
 

@@ -59,9 +59,10 @@ pub struct SizeConstraints {
     ///
     /// A size meets the ratio when its longer side is the multiple of 4 nearest to its shorter
     /// side times the ratio (for a:b with a ≥ b, W is nearest to H · a / b; otherwise H is
-    /// nearest to W · b / a). Sides are multiples of 4, so most ratios are met to within half a
-    /// step of the longer side. Among sizes of equal area the one whose ratio is closest wins.
-    /// A ratio that no valid size meets (beyond about 205:1 or 1:205) gives no size.
+    /// nearest to W · b / a; an exact half rounds up). Sides are multiples of 4, so most ratios
+    /// are met to within half a step of the longer side. Among sizes of equal area the one whose
+    /// ratio is closest wins. A ratio that no valid size meets (beyond about 205:1 or 1:205)
+    /// gives no size. A ratio replaces the 1:2 to 2:1 window of [`SizeRule::Recommended`].
     pub aspect_ratio: Option<AspectRatio>,
     /// The largest width in modules.
     pub max_width: Option<u32>,
@@ -72,9 +73,13 @@ pub struct SizeConstraints {
 /// How the encoder chooses the symbol size.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SizeRule {
-    /// The RECOMMENDED default of 1.5: the smallest square whose message capacity K holds the
-    /// container.
+    /// The RECOMMENDED default of 1.5: among the sizes whose message capacity K holds the
+    /// container and whose sides are within a factor of 2 of each other (W ≤ 2H and H ≤ 2W),
+    /// the one with the smallest area W × H; among equal areas the one closest to square, then
+    /// the taller one. The same as [`SizeRule::Constrained`] with no constraint.
     #[default]
+    Recommended,
+    /// The smallest square whose message capacity K holds the container.
     SmallestSquare,
     /// Exactly this width and height in modules.
     Exact {
@@ -85,7 +90,9 @@ pub enum SizeRule {
     },
     /// The size with the smallest area W × H that holds the container and meets every given
     /// constraint; among equal areas the one closest to the requested aspect ratio (1:1 when
-    /// none is given), then the wider one (1.5).
+    /// none is given), then the taller one (1.5). Without an aspect ratio, only sizes with
+    /// W ≤ 2H and H ≤ 2W are considered while one of them meets the maxima; otherwise every size
+    /// within the maxima is.
     Constrained(SizeConstraints),
 }
 
@@ -119,7 +126,7 @@ fn ratio_distance(width: u32, height: u32, ratio: AspectRatio) -> (u64, u64) {
 }
 
 /// The order of 1.5 between two sizes that both qualify: smaller area first, then the ratio
-/// closest to `ratio`, then the wider.
+/// closest to `ratio`, then the taller.
 fn compare(a: (u32, u32), b: (u32, u32), ratio: AspectRatio) -> Ordering {
     let area = |(w, h): (u32, u32)| u64::from(w) * u64::from(h);
     let (a_high, a_low) = ratio_distance(a.0, a.1, ratio);
@@ -127,13 +134,20 @@ fn compare(a: (u32, u32), b: (u32, u32), ratio: AspectRatio) -> Ordering {
     // a_high / a_low against b_high / b_low, cross-multiplied; every factor is below 2^45.
     let a_distance = u128::from(a_high) * u128::from(b_low);
     let b_distance = u128::from(b_high) * u128::from(a_low);
-    area(a).cmp(&area(b)).then(a_distance.cmp(&b_distance)).then(b.0.cmp(&a.0))
+    area(a).cmp(&area(b)).then(a_distance.cmp(&b_distance)).then(b.1.cmp(&a.1))
+}
+
+/// Whether the sides of a size are within a factor of 2 of each other: the window of the
+/// RECOMMENDED rule of 1.5.
+const fn within_window(width: u32, height: u32) -> bool {
+    width <= 2 * height && height <= 2 * width
 }
 
 /// Chooses the size for a container of `len` bytes at level `level` by `rule`.
 pub(crate) fn choose(rule: &SizeRule, len: usize, level: u8) -> Result<(u32, u32), SizeFailure> {
     let holds = |w: u32, h: u32| capacity(w, h, level).is_some_and(|k| k >= len);
     match *rule {
+        SizeRule::Recommended => constrained(&SizeConstraints::default(), len, level),
         SizeRule::SmallestSquare => {
             sides().find(|&s| holds(s, s)).map(|s| (s, s)).ok_or(SizeFailure::NoSize)
         }
@@ -188,12 +202,26 @@ fn constrained(
         }
     } else {
         // For one width a taller symbol only has a larger area, so the first height that holds
-        // the container is the only candidate of that width.
+        // the container is the only candidate of that width, and inside the window the first
+        // such height that is at least half the width.
+        let mut outside: Option<(u32, u32)> = None;
         for w in sides().take_while(|&w| w <= max_width) {
-            if let Some(h) = sides().take_while(|&h| h <= max_height).find(|&h| allowed(w, h)) {
+            let Some(first) = sides().take_while(|&h| h <= max_height).find(|&h| allowed(w, h))
+            else {
+                continue;
+            };
+            if outside.is_none_or(|current| compare((w, first), current, ratio) == Ordering::Less) {
+                outside = Some((w, first));
+            }
+            let inside = sides()
+                .skip_while(|&h| h < first)
+                .take_while(|&h| h <= max_height && h <= 2 * w)
+                .find(|&h| within_window(w, h) && allowed(w, h));
+            if let Some(h) = inside {
                 offer((w, h));
             }
         }
+        return best.or(outside).ok_or(SizeFailure::NoSize);
     }
     best.ok_or(SizeFailure::NoSize)
 }
@@ -218,10 +246,11 @@ mod tests {
     }
 
     #[test]
-    fn compare_prefers_area_then_ratio_then_width() {
+    fn compare_prefers_area_then_ratio_then_height() {
         let square = AspectRatio::SQUARE;
         assert_eq!(compare((20, 20), (20, 24), square), Ordering::Less);
-        assert_eq!(compare((20, 28), (28, 20), square), Ordering::Greater);
+        assert_eq!(compare((20, 28), (28, 20), square), Ordering::Less);
+        assert_eq!(compare((24, 24), (20, 28), square), Ordering::Greater);
         let wide = AspectRatio { width: 4, height: 1 };
         assert_eq!(compare((28, 20), (20, 28), wide), Ordering::Less);
         let tall = AspectRatio { width: 1, height: 4 };
@@ -229,15 +258,19 @@ mod tests {
     }
 
     #[test]
-    fn smallest_square_matches_annex_a() {
-        // A.2.3: 20 × 20 gives K = 16 and 24 × 24 gives K = 34 at level 0.
+    fn recommended_rule_of_1_5() {
+        // 20 × 20 gives K = 16, 20 × 24 gives 24, 20 × 28 and 24 × 24 give 34 at level 0.
         assert_eq!(capacity(20, 20, 0), Some(16));
+        assert_eq!(capacity(20, 24, 0), Some(24));
+        assert_eq!(capacity(20, 28, 0), Some(34));
         assert_eq!(capacity(24, 24, 0), Some(34));
-        assert_eq!(choose(&SizeRule::SmallestSquare, 28, 0), Ok((24, 24)));
-        // A.2.3: 20 × 28 and 28 × 20 also hold it with a smaller area; the wider one wins the
-        // tie at 1:1.
+        // The 29-byte container of 3.10 f: 20 × 28 and 28 × 20 hold it with a smaller area than
+        // 24 × 24; they are equally close to square, and the taller one wins.
+        assert_eq!(choose(&SizeRule::Recommended, 29, 0), Ok((20, 28)));
+        assert_eq!(choose(&SizeRule::SmallestSquare, 29, 0), Ok((24, 24)));
         let any = SizeRule::Constrained(SizeConstraints::default());
-        assert_eq!(choose(&any, 28, 0), Ok((28, 20)));
+        assert_eq!(choose(&any, 29, 0), Ok((20, 28)));
+        assert_eq!(choose(&any, 28, 0), Ok((20, 28)));
         let tall = SizeRule::Constrained(SizeConstraints {
             aspect_ratio: AspectRatio::new(5, 7),
             ..SizeConstraints::default()
@@ -297,28 +330,42 @@ mod tests {
 
     #[test]
     fn exhaustive_constrained_search_agrees_with_brute_force() {
-        // The pruned search without an aspect ratio against every pair, for a few lengths.
-        for (len, level, max_w, max_h) in
-            [(28, 0, 4108, 4108), (500, 1, 60, 4108), (3000, 3, 4108, 100), (90, 2, 40, 40)]
-        {
+        // The pruned search without an aspect ratio against every pair, for a few lengths:
+        // the best size inside the 1:2 to 2:1 window, else the best size within the maxima.
+        for (len, level, max_w, max_h) in [
+            (28, 0, 4108, 4108),
+            (500, 1, 60, 4108),
+            (3000, 3, 4108, 100),
+            (90, 2, 40, 40),
+            (2000, 0, 4108, 20),
+            (700, 1, 24, 4108),
+        ] {
             let rule = SizeRule::Constrained(SizeConstraints {
                 aspect_ratio: None,
                 max_width: Some(max_w),
                 max_height: Some(max_h),
             });
-            let mut best: Option<(u32, u32)> = None;
-            for w in sides().filter(|&w| w <= max_w) {
-                for h in sides().filter(|&h| h <= max_h) {
-                    if capacity(w, h, level).is_some_and(|k| k >= len)
-                        && best.is_none_or(|b| {
-                            compare((w, h), b, AspectRatio::SQUARE) == Ordering::Less
-                        })
-                    {
-                        best = Some((w, h));
+            let best_of = |window: bool| {
+                let mut best: Option<(u32, u32)> = None;
+                for w in sides().filter(|&w| w <= max_w) {
+                    for h in sides().filter(|&h| h <= max_h) {
+                        if (!window || within_window(w, h))
+                            && capacity(w, h, level).is_some_and(|k| k >= len)
+                            && best.is_none_or(|b| {
+                                compare((w, h), b, AspectRatio::SQUARE) == Ordering::Less
+                            })
+                        {
+                            best = Some((w, h));
+                        }
                     }
                 }
+                best
+            };
+            let expected = best_of(true).or_else(|| best_of(false));
+            assert_eq!(choose(&rule, len, level).ok(), expected, "len {len} level {level}");
+            if max_w == 4108 && max_h == 4108 {
+                assert_eq!(choose(&SizeRule::Recommended, len, level).ok(), expected);
             }
-            assert_eq!(choose(&rule, len, level).ok(), best, "len {len} level {level}");
         }
     }
 }

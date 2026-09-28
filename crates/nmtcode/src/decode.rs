@@ -4,28 +4,38 @@
 use core::fmt;
 
 use nmtcode_core::{
-    CODEC_COUNT_V0, ContentType, DictionaryEntry, DictionaryKind, FormatWord, MAX_CONTENT_LEN_V0,
-    ModuleGrid, Outcome, PresentAs, ReaderConfig, RecordForm, ValueNotice, decode_format,
-    parse_message, parse_records, safe_file_name,
+    CODEC_COUNT_V0, ContentType, DictionaryEntry, DictionaryKind, FormatSample, FormatWord,
+    MAX_SIDE, MAX_STATIC_CONTENT_LEN_V0, ModuleGrid, Outcome, PresentAs, ReaderConfig, RecordForm,
+    ValueNotice, decode_format_with, parse_message, parse_records, safe_file_name,
 };
 use nmtcode_ecc::EccError;
 use nmtcode_payload::CodecError;
-use nmtcode_symbol::{Layout, read_format_copies};
+use nmtcode_symbol::{Layout, ModuleClass, read_format_copies};
 
 use crate::SpecError;
+
+/// The area of the largest symbol, 4108 × 4108 modules: the default of
+/// [`DecodeOptions::max_area`], which accepts every valid size.
+pub const MAX_AREA: u64 = MAX_SIDE as u64 * MAX_SIDE as u64;
 
 /// What [`decode`] accepts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodeOptions {
     /// The reader's own limit `LIMIT` on the decoded length L in bytes (chapter 6, 6.4). A
     /// container that declares more is refused with `E_TOO_LARGE` before anything is allocated.
-    /// Values above `MAX_CONTENT_LEN_V0` (16 MiB) act as 16 MiB. The default is 16 MiB.
+    /// Values above `MAX_STATIC_CONTENT_LEN_V0` (1 MiB, the cap of a static symbol) act as
+    /// 1 MiB. The default is 1 MiB.
     pub limit: u32,
+    /// The largest area W × H, in modules, that this reader decodes (chapter 2, 2.7 step 5;
+    /// chapter 5, 5.11). A format word with a larger area rejects the symbol with
+    /// `E_SIZE_LIMIT` before any data module is read. The default, [`MAX_AREA`], accepts every
+    /// valid size.
+    pub max_area: u64,
 }
 
 impl Default for DecodeOptions {
     fn default() -> Self {
-        Self { limit: MAX_CONTENT_LEN_V0 }
+        Self { limit: MAX_STATIC_CONTENT_LEN_V0, max_area: MAX_AREA }
     }
 }
 
@@ -68,7 +78,9 @@ impl fmt::Display for DecodeError {
             Outcome::Damaged => "damaged",
             Outcome::Unsupported => "unsupported",
             Outcome::Malformed => "malformed",
-            Outcome::Presented | Outcome::PresentedBaseOnly | Outcome::ErrorReported => "error",
+            Outcome::Presented | Outcome::PresentedBaseOnly | Outcome::PresentedWithError => {
+                "error"
+            }
         };
         write!(f, "{} ({outcome})", self.name())
     }
@@ -144,7 +156,51 @@ fn reader_config(limit: u32, dictionaries: &[DictionaryEntry]) -> ReaderConfig<'
     for (id, implemented) in (0u32..).zip(codecs.iter_mut()) {
         *implemented = nmtcode_payload::is_supported(id);
     }
-    ReaderConfig { codecs, limit: limit.min(MAX_CONTENT_LEN_V0), dictionaries }
+    ReaderConfig { codecs, limit: limit.min(MAX_STATIC_CONTENT_LEN_V0), dictionaries }
+}
+
+/// The least number of colour codewords `N_c` of a colour-profile-1 symbol (chapter 7, 7.8.2).
+const COLOUR_MIN_CODEWORDS: usize = 16;
+
+/// Reference cells per copy, times c² (chapter 7, 7.5).
+const REFERENCE_MODULES_PER_COPY: usize = 32;
+
+/// The number of colour codewords `N_c` of `layout` with chroma cells of `c` × `c` modules
+/// (chapter 7, 7.5 and 7.8.2): the cells aligned to multiples of c whose modules are all data
+/// modules, less the two reference copies, in whole bytes.
+fn colour_codewords(layout: &Layout, c: u32) -> usize {
+    let cells = (0..layout.height() / c)
+        .flat_map(|j| (0..layout.width() / c).map(move |i| (i, j)))
+        .filter(|&(i, j)| {
+            (0..c).all(|dy| {
+                (0..c).all(|dx| {
+                    layout.module_class(c * i + dx, c * j + dy) == Some(ModuleClass::Data)
+                })
+            })
+        })
+        .count();
+    let side = usize::try_from(c).unwrap_or(usize::MAX);
+    let reference = 2 * (REFERENCE_MODULES_PER_COPY / (side * side).max(1));
+    cells.saturating_sub(reference) / 8
+}
+
+/// Step 3 of 2.7 for a word that has valid fields: it must give the grid's size, and a
+/// colour-profile-1 word must leave at least 16 colour codewords (chapter 7, 7.8.2).
+///
+/// The grid is the reader's own measurement of the symbol: a detector such as
+/// `nmtcode-detect` chooses its width and height from the finders it found, within the
+/// tolerance of chapter 5 (5.11). A word whose W and H differ from the grid therefore disagrees
+/// with the finder geometry, and its copy is not decoded.
+fn plausible(word: &FormatWord, grid: &ModuleGrid) -> bool {
+    if word.width() != grid.width() || word.height() != grid.height() {
+        return false;
+    }
+    if word.colour_profile() == 0 {
+        return true;
+    }
+    Layout::new(word.width(), word.height()).is_ok_and(|layout| {
+        colour_codewords(&layout, word.chroma_cell_side()) >= COLOUR_MIN_CODEWORDS
+    })
 }
 
 /// The dictionaries of the payload crate's registry, in the terms of the container checks.
@@ -167,9 +223,11 @@ fn carried_dictionaries() -> Vec<DictionaryEntry> {
 
 const fn ecc_error(error: EccError) -> SpecError {
     match error {
-        EccError::LayerTooSmall => SpecError::LayerTooSmall,
-        // Every other error means the blocks could not be corrected as the format word says.
-        EccError::Uncorrectable
+        // Every allowed size has at least 20 base-layer codewords (chapter 4, 4.6), so a layer
+        // that is too small, like every other error, means the blocks could not be corrected
+        // as the format word says.
+        EccError::LayerTooSmall
+        | EccError::Uncorrectable
         | EccError::InvalidLevel
         | EccError::InvalidParity
         | EccError::InvalidBlockLength
@@ -235,35 +293,34 @@ fn decode_with(
 /// Decodes the symbol in `grid` (quiet zone excluded, dark = `true`) by the encoding order of
 /// chapter 1 (1.3) in reverse.
 ///
-/// 1. Both format copies are sampled and decoded with up to 3 bit errors each (chapter 2, 2.7).
-///    The chosen word must give the grid's width and height.
+/// 1. Both format copies are sampled, unmasked with their own masks and decoded with up to 3
+///    bit errors each (chapter 2, 2.7). A copy whose word does not give the grid's width and
+///    height, or leaves a colour layer below 16 codewords, is not decoded. Two decoded copies
+///    with different words reject the symbol, and so does an area above
+///    [`DecodeOptions::max_area`].
 /// 2. The codeword stream is read from the data modules and unwhitened (chapter 5).
 /// 3. Every Reed-Solomon block is corrected (chapter 4, 4.9).
 /// 4. The container is checked: body length, CRC-32C, then every header field (chapter 3, 3.9).
 /// 5. The codec decodes exactly L bytes within [`DecodeOptions::limit`] (chapter 6, 6.4).
 /// 6. The records are read and checked (chapter 3, 3.2.5, 3.4.4).
 ///
-/// When the two format copies decode to different words and the base layer fails under the
-/// chosen one, the other word is tried (2.7 step 4); if both fail, the error of the chosen word
-/// is returned. Nothing is returned from a symbol that failed a check.
+/// Nothing is returned from a symbol that failed a check.
 ///
 /// # Errors
 ///
 /// [`DecodeError`] with the error of chapter 9 (9.8) of the first check that failed. A grid
-/// whose size differs from the size in its format word gives `E_FORMAT_UNREADABLE`.
+/// whose size differs from the size in every copy of its format word gives
+/// `E_FORMAT_UNREADABLE`, and a format word whose area exceeds [`DecodeOptions::max_area`]
+/// gives `E_SIZE_LIMIT`.
 pub fn decode(grid: &ModuleGrid, options: &DecodeOptions) -> Result<Decoded, DecodeError> {
     let copies = read_format_copies(grid).map_err(|_| SpecError::FormatUnreadable)?;
-    let format = decode_format(&copies)?;
+    let samples = copies.map(|bits| Some(FormatSample::new(bits)));
+    let format = decode_format_with(samples, |word| plausible(word, grid))?;
+    // 2.7 step 5: the reader's largest area.
+    if u64::from(format.word.width()) * u64::from(format.word.height()) > options.max_area {
+        return Err(SpecError::SizeLimit.into());
+    }
     let dictionaries = carried_dictionaries();
     let config = reader_config(options.limit, &dictionaries);
-    let fits = |word: &FormatWord| word.width() == grid.width() && word.height() == grid.height();
-    let mut words = [Some(format.word), format.alternative].into_iter().flatten().filter(fits);
-    let first = words.next().ok_or(SpecError::FormatUnreadable)?;
-    match decode_with(grid, &first, &config) {
-        Ok(decoded) => Ok(decoded),
-        Err(error) => match words.next() {
-            Some(other) => decode_with(grid, &other, &config).map_err(|_| error.into()),
-            None => Err(error.into()),
-        },
-    }
+    decode_with(grid, &format.word, &config).map_err(DecodeError::from)
 }

@@ -7,8 +7,9 @@
 //! - [`Layout`] holds everything that depends only on the symbol size: the class of every module
 //!   (5.2 to 5.7), the counts D, N and R (5.7) and the placement order (5.8), which
 //!   [`Layout::placement`] yields as a [`Placement`] iterator.
-//!   [`Layout::draw`] turns an already-masked format codeword and the codeword stream into a
-//!   grid; [`Layout::read_stream`] and [`read_format_copies`] read them back.
+//!   [`Layout::draw_copies`] turns the two sent format words (copy A and copy B, each with its
+//!   own mask) and the codeword stream into a grid; [`Layout::read_stream`] and
+//!   [`read_format_copies`] read them back.
 //! - [`SymbolCounts`] gives D, N, R and the number of reference marks from the formula of 5.7,
 //!   without building a [`Layout`].
 //! - [`Corner`] is the finder pattern of each corner (5.3).
@@ -19,10 +20,11 @@
 //!
 //! # Format codeword bits
 //!
-//! A format codeword is the low [`FORMAT_BITS`] bits of a `u64`. Bit index `i` of 2.4.3, the
+//! A sent format word is the low [`FORMAT_BITS`] bits of a `u64`. Bit index `i` of 2.4.3, the
 //! coefficient of x^(46 − i), is integer bit `46 − i`, so index 0 is the most significant of the
-//! 47 bits. Module A\[i\] of copy A and module B\[i\] of copy B carry bit index `i` (2.6), dark
-//! for 1.
+//! 47 bits. Module A\[i\] of copy A carries bit index `i` of `F_A`, and module B\[i\] of copy B
+//! bit index `i` of `F_B` (2.6), dark for 1. The two words carry the same codeword under two
+//! different masks (2.5), so a symbol never has the same word in both copies.
 //!
 //! # Example
 //!
@@ -32,9 +34,11 @@
 //! let layout = Layout::new(24, 24)?;
 //! assert_eq!(layout.codeword_count(), 42);
 //! let stream = vec![0xA5; layout.codeword_count()];
-//! let grid = layout.draw(0x51FB_6B49_7725, &stream)?;
+//! // F_A and F_B of a 24 × 24 symbol at level 0 (chapter 2, 2.5).
+//! let format = [0x51FB_6B49_7725, 0x3FC2_36B9_C7A9];
+//! let grid = layout.draw_copies(format, &stream)?;
 //! assert_eq!(layout.read_stream(&grid)?, stream);
-//! assert_eq!(read_format_copies(&grid)?, [0x51FB_6B49_7725; 2]);
+//! assert_eq!(read_format_copies(&grid)?, format);
 //! # Ok::<(), nmtcode_symbol::SymbolError>(())
 //! ```
 

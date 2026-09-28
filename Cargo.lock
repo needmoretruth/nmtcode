@@ -253,6 +253,7 @@ dependencies = [
  "nmtcode-detect",
  "nmtcode-render",
  "nmtcode-symbol",
+ "png",
 ]
 
 [[package]]
@@ -261,6 +262,7 @@ version = "0.0.1"
 dependencies = [
  "crc",
  "proptest",
+ "sha2",
 ]
 
 [[package]]
@@ -269,6 +271,7 @@ version = "0.0.1"
 dependencies = [
  "nmtcode-core",
  "nmtcode-render",
+ "nmtcode-symbol",
  "png",
  "proptest",
 ]

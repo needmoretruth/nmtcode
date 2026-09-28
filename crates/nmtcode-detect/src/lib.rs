@@ -4,10 +4,13 @@
 //! possibly rotated by a multiple of 90° or mirrored (specification 5.11), at a whole number of
 //! pixels per module from 2 up, or rescaled by a non-integer factor with bilinear smoothing
 //! (the tests cover 2.3 to 9.3 pixels per module), with extra light margin and a uniform change
-//! of brightness. Camera photos (perspective, uneven light, noise) are outside its scope.
+//! of brightness, and reversed (light modules on dark). Camera photos (perspective, uneven
+//! light, noise) are outside its scope.
 //!
-//! - [`read_png`] decodes a PNG and returns the module grid of every symbol found.
-//! - [`find_symbols`] does the same on an 8-bit luminance image.
+//! - [`detect_png`] decodes a PNG and returns a [`Detection`]: the module grid of every symbol
+//!   found, and the number of nested symbols that are left out (5.11).
+//! - [`detect`] does the same on an 8-bit luminance image.
+//! - [`read_png`] and [`find_symbols`] return the grids alone.
 //!
 //! The result is the module grid only (quiet zone excluded, dark = `true`, in the symbol's own
 //! orientation). Reading the format word and the data is the job of other crates. A bootstrap QR
@@ -28,6 +31,15 @@
 //! 5. Every module is sampled at its centre and compared with a threshold taken from the darkest
 //!    and lightest module centres around it. The four finders and their separators are checked
 //!    in the sampled grid; at least three must be exact.
+//! 6. A symbol whose rectangle lies inside another symbol's rectangle is nested (5.11): neither
+//!    is returned, and [`Detection::nested`] counts both, so that a reader can report
+//!    `E_NESTED_SYMBOL`.
+//! 7. When the image holds no symbol, steps 1 to 6 run once more on the inverted image, so a
+//!    reversed symbol is read as if it had been captured dark on light (1.4, 5.11).
+//!
+//! The width and height chosen in step 4 agree with the finder estimate within the tolerance
+//! of 5.11, max(4, W / 10) modules. A reader that checks that the format word gives the grid's
+//! width and height, as `nmtcode::decode` does, therefore applies the geometry check of 5.11.
 
 mod decode;
 mod finder;
@@ -56,15 +68,46 @@ pub const MAX_PIXELS: u64 = 100_000_000;
 /// [`DetectError`] when the bytes are not a PNG, the PNG is damaged, or the image has more than
 /// [`MAX_PIXELS`] pixels.
 pub fn read_png(bytes: &[u8]) -> Result<Vec<ModuleGrid>, DetectError> {
-    let image = decode_png(bytes)?;
-    Ok(find_symbols(&image))
+    Ok(detect_png(bytes)?.symbols)
 }
 
 /// Returns the module grid of every NMT Code symbol in `image`, in the order the symbols were
 /// found. An image without a symbol, and an image whose pixel buffer does not hold exactly
 /// `width × height` pixels or that has more than [`MAX_PIXELS`] pixels, gives an empty list.
+/// Nested symbols are left out; [`detect`] also counts them.
 pub fn find_symbols(image: &LumaImage) -> Vec<ModuleGrid> {
+    detect(image).symbols
+}
+
+/// Decodes the PNG in `bytes` and finds every NMT Code symbol in it, as [`read_png`], with the
+/// count of nested symbols.
+///
+/// # Errors
+///
+/// As [`read_png`].
+pub fn detect_png(bytes: &[u8]) -> Result<Detection, DetectError> {
+    let image = decode_png(bytes)?;
+    Ok(detect(&image))
+}
+
+/// Finds every NMT Code symbol in `image`, as [`find_symbols`], with the count of nested
+/// symbols.
+pub fn detect(image: &LumaImage) -> Detection {
     symbol::find(image)
+}
+
+/// The symbols found in one image.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Detection {
+    /// The module grid of every symbol found that is not nested, in the order found (quiet
+    /// zone excluded, dark = `true`, in the symbol's own orientation).
+    pub symbols: Vec<ModuleGrid>,
+    /// The number of symbols that lie inside another symbol found in the same image, together
+    /// with the symbols around them (specification 5.11). None of them is in
+    /// [`Detection::symbols`]: a reader presents neither and reports `E_NESTED_SYMBOL`.
+    pub nested: usize,
+    /// True when the symbols were found in the inverted image: light modules on dark (1.4).
+    pub inverted: bool,
 }
 
 /// Why an image could not be read.

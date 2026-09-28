@@ -115,21 +115,26 @@ pub fn read_format_copies(grid: &ModuleGrid) -> Result<[u64; 2], SymbolError> {
     }))
 }
 
-/// Writes the masked format codeword `codeword` on both copies of `grid` (2.6).
+/// Writes the two sent format words on their copies of `grid` (2.6): `copies[0]` = `F_A` on
+/// copy A and `copies[1]` = `F_B` on copy B, as `nmtcode_core::FormatWord::encode_copies`
+/// returns them.
 ///
-/// Integer bit `46 − i` of `codeword` goes on modules A\[i\] and B\[i\], dark for 1. Other
-/// modules are left as they are.
+/// Integer bit `46 − i` of `F_A` goes on module A\[i\] and that of `F_B` on module B\[i\], dark
+/// for 1. Each copy has its own mask (2.5), so the two words differ; this function takes both so
+/// that one word is never written into both copies. Other modules are left as they are.
 ///
 /// # Errors
 ///
-/// [`SymbolError::FormatCodewordTooWide`] when `codeword` has a bit set above bit 46, and
+/// [`SymbolError::FormatCodewordTooWide`] when a word has a bit set above bit 46, and
 /// [`SymbolError::GridTooSmall`] when a side of `grid` is below [`FORMAT_MIN_SIDE`].
-pub fn write_format_copies(grid: &mut ModuleGrid, codeword: u64) -> Result<(), SymbolError> {
-    check_codeword(codeword)?;
+pub fn write_format_copies(grid: &mut ModuleGrid, copies: [u64; 2]) -> Result<(), SymbolError> {
+    for word in copies {
+        check_codeword(word)?;
+    }
     let positions = format_positions(grid.width(), grid.height())?;
-    for copy in positions {
+    for (copy, word) in positions.into_iter().zip(copies) {
         for (i, (x, y)) in copy.into_iter().enumerate() {
-            grid.set(x, y, codeword >> (FORMAT_BITS - 1 - i) & 1 == 1);
+            grid.set(x, y, word >> (FORMAT_BITS - 1 - i) & 1 == 1);
         }
     }
     Ok(())

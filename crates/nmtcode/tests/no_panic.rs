@@ -2,9 +2,9 @@
 
 mod common;
 
-use common::{sealed_container, symbol_with_container};
+use common::{sealed_colour_container, sealed_container, symbol_with_container};
 use nmtcode::{DecodeOptions, ModuleGrid, SymbolClass, decode};
-use nmtcode_core::{FORMAT_MASK, format_codeword};
+use nmtcode_core::{FORMAT_MASK_A, FORMAT_MASK_B, format_codeword};
 use nmtcode_symbol::{Layout, write_format_copies};
 use proptest::prelude::*;
 
@@ -27,7 +27,7 @@ fn fill(width: u32, height: u32, bits: &[u8]) -> ModuleGrid {
 
 /// Decodes and checks that a result, when there is one, is internally consistent.
 fn decode_anything(grid: &ModuleGrid, limit: u32) {
-    if let Ok(decoded) = decode(grid, &DecodeOptions { limit }) {
+    if let Ok(decoded) = decode(grid, &DecodeOptions { limit, ..DecodeOptions::default() }) {
         assert_eq!(
             (decoded.format.width(), decoded.format.height()),
             (grid.width(), grid.height())
@@ -69,7 +69,8 @@ proptest! {
         bits in proptest::collection::vec(any::<u8>(), 1..256),
     ) {
         let mut grid = fill(width, height, &bits);
-        write_format_copies(&mut grid, format_codeword(data) ^ FORMAT_MASK).unwrap();
+        let codeword = format_codeword(data);
+        write_format_copies(&mut grid, [codeword ^ FORMAT_MASK_A, codeword ^ FORMAT_MASK_B]).unwrap();
         decode_anything(&grid, 16 << 20);
     }
 
@@ -100,7 +101,12 @@ proptest! {
         colour in 0u8..=1,
         limit in prop_oneof![Just(16u32 << 20), 0u32..2000],
     ) {
-        let container = sealed_container(lead, &body);
+        // The echo byte matches the symbol, so the checks after it see the body.
+        let container = if colour == 1 {
+            sealed_colour_container(lead, &body)
+        } else {
+            sealed_container(lead, &body)
+        };
         decode_anything(&symbol_with_container(&container, 64, 64, 0, colour, SymbolClass::Static), limit);
     }
 }

@@ -8,7 +8,8 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::container::{ContainerHeader, Cursor, MAX_CONTENT_LEN_V0, WriteError};
+use crate::container::{ContainerHeader, Cursor, MAX_STATIC_CONTENT_LEN_V0, WriteError};
+use crate::format::FormatWord;
 use crate::leb128::{Leb128Error, leb128_len, write_leb128};
 use crate::{Error, Outcome};
 
@@ -112,9 +113,9 @@ impl ContentType {
 /// The record form of a container (3.2.2, 3.2.5).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RecordForm {
-    /// R = 0: one record, whose content type is field 8 and whose value is the decoded content.
+    /// R = 0: one record, whose content type is field 9 and whose value is the decoded content.
     Single(ContentType),
-    /// R = 1: the decoded content is this many canonical records (field 9, 1 or more).
+    /// R = 1: the decoded content is this many canonical records (field 10, 1 or more).
     List(u32),
 }
 
@@ -161,13 +162,13 @@ pub struct RecordContent {
 }
 
 impl RecordContent {
-    /// Builds the decoded content of a container from its records, in order (3.2.5).
+    /// Builds the decoded content of a static container from its records, in order (3.2.5).
     ///
-    /// One record gives single-record form, since it has the smaller header; two or more give
-    /// record-list form. The records are checked against the rules a generator must follow:
-    /// at least one record, at most one action record and only as the first (3.4.4 rules 1 and
-    /// 2), every file name record directly followed by a file record (rule 3), and a decoded
-    /// length of at most [`MAX_CONTENT_LEN_V0`] (3.2.4).
+    /// One record gives single-record form and two or more give record-list form, as 3.2.5
+    /// requires of a generator. The records are checked against the rules a generator must
+    /// follow: at least one record, at most one action record and only as the first (3.4.4
+    /// rules 1 and 2), every file name record directly followed by a file record (rule 3), and a
+    /// decoded length of at most [`MAX_STATIC_CONTENT_LEN_V0`] (chapter 6, 6.4).
     ///
     /// # Errors
     ///
@@ -189,7 +190,8 @@ impl RecordContent {
             }
         }
         let stored_only = records.iter().any(|record| record.content_type.never_compress());
-        let max = usize::try_from(MAX_CONTENT_LEN_V0).map_err(|_| WriteError::ContentTooLarge)?;
+        let max =
+            usize::try_from(MAX_STATIC_CONTENT_LEN_V0).map_err(|_| WriteError::ContentTooLarge)?;
         if let [only] = records {
             if only.value.len() > max {
                 return Err(WriteError::ContentTooLarge);
@@ -211,6 +213,32 @@ impl RecordContent {
         }
         Ok(Self { form: RecordForm::List(count), decoded, stored_only })
     }
+}
+
+/// The bytes the digest of a colour symbol is computed over (3.5): the format data d of the
+/// symbol as 4 bytes, most significant first; the number of base records as LEB128; the
+/// canonical base records; the number of extension records as LEB128; the canonical extension
+/// records. The digest is SHA-256 of these bytes.
+///
+/// # Errors
+///
+/// [`WriteError::ContentTooLarge`] when a value is 2^32 bytes or longer or there are 2^32
+/// records or more.
+pub fn digest_input(
+    format: &FormatWord,
+    base: &[Record<'_>],
+    extension: &[Record<'_>],
+) -> Result<Vec<u8>, WriteError> {
+    let mut out = Vec::new();
+    out.extend_from_slice(&format.data().to_be_bytes());
+    for records in [base, extension] {
+        let count = u32::try_from(records.len()).map_err(|_| WriteError::ContentTooLarge)?;
+        write_leb128(&mut out, count);
+        for record in records {
+            record.write_canonical(&mut out)?;
+        }
+    }
+    Ok(out)
 }
 
 /// How a reader presents a record (3.4.3).
@@ -265,7 +293,7 @@ pub struct ParsedRecord<'a> {
 pub struct Records<'a> {
     /// The base records.
     pub records: Vec<ParsedRecord<'a>>,
-    /// True when the container has C = 1: the symbol holds extension records in its colour
+    /// True when the container has X = 1: the symbol holds extension records in its colour
     /// layer, which this crate does not read (3.5 rule 2).
     pub extension_unread: bool,
 }
@@ -294,17 +322,75 @@ const fn record_leb128(error: Leb128Error) -> Error {
     }
 }
 
+/// The longest file name, in bytes of UTF-8, that [`safe_file_name`] returns (3.4.3).
+pub const MAX_FILE_NAME_LEN: usize = 255;
+
+/// Windows device names that a file name may not start with (3.4.3), compared without case on
+/// the part before the first `.`.
+const RESERVED_DEVICE_NAMES: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+
+/// Whether a character is removed from a file name (3.4.3 step 2): a control character, a
+/// character that changes the direction of text, or an invisible character.
+const fn is_removed_from_file_name(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{061C}'
+                | '\u{180E}'
+                | '\u{200B}'..='\u{200F}'
+                | '\u{202A}'..='\u{202E}'
+                | '\u{2060}'..='\u{2064}'
+                | '\u{2066}'..='\u{2069}'
+                | '\u{FEFF}'
+        )
+}
+
+/// Whether `stem` (the part of a name before its first `.`) is a Windows device name: `CON`,
+/// `PRN`, `AUX`, `NUL`, `COM0` to `COM9` or `LPT0` to `LPT9`, in any case.
+fn is_device_name(stem: &str) -> bool {
+    let upper = stem.to_ascii_uppercase();
+    RESERVED_DEVICE_NAMES.contains(&upper.as_str())
+        || ((upper.starts_with("COM") || upper.starts_with("LPT"))
+            && upper.len() == 4
+            && upper.as_bytes().get(3).is_some_and(u8::is_ascii_digit))
+}
+
 /// The file name a reader may offer when saving the file that follows a file name record,
-/// from that record's value (3.4.3).
+/// from that record's value, by the steps of 3.4.3:
 ///
-/// A file name is never used as a path: this keeps only the part after the last `/` or `\`
-/// and removes control characters. A result of `.` or `..` becomes empty, since it names a
-/// directory. `None` when the value is not valid UTF-8; the record is then presented as bytes.
+/// 1. keep the part after the last `/` or `\`;
+/// 2. remove control characters, characters that change the direction of text (U+061C,
+///    U+200E, U+200F, U+202A to U+202E, U+2066 to U+2069) and invisible characters (U+00AD,
+///    U+180E, U+200B to U+200D, U+2060 to U+2064, U+FEFF);
+/// 3. replace each of `:` `*` `?` `"` `<` `>` `|` by `_`;
+/// 4. remove leading dots, then trailing dots and spaces;
+/// 5. put `_` before a name whose part before the first `.` is a Windows device name;
+/// 6. cut the name to at most [`MAX_FILE_NAME_LEN`] bytes, at a character boundary.
+///
+/// An empty result means the reader chooses a name of its own. `None` when the value is not
+/// valid UTF-8; the record is then presented as bytes.
 pub fn safe_file_name(value: &[u8]) -> Option<String> {
     let name = core::str::from_utf8(value).ok()?;
     let last = name.rsplit(['/', '\\']).next().unwrap_or_default();
-    let cleaned: String = last.chars().filter(|c| !c.is_control()).collect();
-    if cleaned == "." || cleaned == ".." { Some(String::new()) } else { Some(cleaned) }
+    let cleaned: String = last
+        .chars()
+        .filter(|&c| !is_removed_from_file_name(c))
+        .map(|c| if matches!(c, ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim_start_matches('.').trim_end_matches(['.', ' ']);
+    let stem = trimmed.split('.').next().unwrap_or_default();
+    let mut out = String::with_capacity(trimmed.len() + 1);
+    if is_device_name(stem) {
+        out.push('_');
+    }
+    out.push_str(trimmed);
+    let mut end = out.len().min(MAX_FILE_NAME_LEN);
+    while !out.is_char_boundary(end) {
+        end -= 1;
+    }
+    out.truncate(end);
+    Some(out)
 }
 
 /// How a record of `content_type` with `value` is presented, given the type of the next record.
@@ -335,14 +421,14 @@ fn presentation(
 /// it. In record-list form the decoded content must be exactly the record count's canonical
 /// records. The ordering rules of 3.4.4 are applied: more than one action record, or an action
 /// record that is not the first, rejects the symbol; a file name record without a file record
-/// after it is presented as unknown data. When the container has C = 1 the result says that
+/// after it is presented as unknown data. When the container has X = 1 the result says that
 /// the extension records were not read.
 ///
 /// # Errors
 ///
 /// - [`Error::Malformed`] when `decoded` is not `header.fields.decoded_len` bytes (3.2.4).
 /// - [`Error::RecordList`] for a record count of 0, a record that runs past the end, or bytes
-///   left over (3.2.5); [`Error::NoBaseRecord`] instead for a count of 0 with C = 1 (3.5).
+///   left over (3.2.5).
 /// - [`Error::Leb128`] for a type ID or value length that is not minimal or is 2^32 or more.
 /// - [`Error::ActionRule`] when rule 1 or 2 of 3.4.4 is broken.
 pub fn parse_records<'a>(
@@ -355,9 +441,7 @@ pub fn parse_records<'a>(
     let extension_unread = header.extension.is_some();
     let raw: Vec<Record<'a>> = match header.fields.form {
         RecordForm::Single(content_type) => alloc::vec![Record { content_type, value: decoded }],
-        RecordForm::List(0) => {
-            return Err(if extension_unread { Error::NoBaseRecord } else { Error::RecordList });
-        }
+        RecordForm::List(0) => return Err(Error::RecordList),
         RecordForm::List(count) => {
             // Every canonical record takes at least 2 bytes, so this bounds the allocation.
             let capacity = usize::try_from(count).map_or(0, |count| count.min(decoded.len() / 2));

@@ -5,10 +5,11 @@
 NMT Code(needmoretruth code)는 요즘 폰과 컴퓨터의 카메라로 읽는 2차원 코드입니다. 같은 내용을
 QR 코드보다 적은 모듈에 담습니다.
 
-![이 저장소 주소를 담은 NMT Code와 그 옆의 작은 QR 코드](docs/images/example-url.png)
+![QR 코드 아래에 있는, 이 저장소 주소를 담은 NMT Code](docs/images/example-url.png)
 
-왼쪽 코드에는 `https://github.com/needmoretruth/nmtcode`가 들어 있습니다. 오른쪽 QR 코드에도 같은
-주소가 들어 있어서, QR 코드만 읽는 폰으로 찍으면 이 페이지로 옵니다.
+아래쪽 NMT Code에는 `https://github.com/needmoretruth/nmtcode`가 들어 있습니다. 위쪽 QR 코드에도 같은
+주소가 들어 있어서, QR 코드만 읽는 폰으로 찍으면 이 페이지로 옵니다. 이 QR 코드는 `--qr`로 붙이고,
+인쇄용 코드(`--profile print`)에는 처음부터 붙습니다.
 
 > **버전 0.0.1은 프로토타입입니다.** 흑백 코드를 PNG나 SVG로 만들고, 직접 만든 PNG 파일을 다시
 > 읽습니다. 카메라 사진 읽기, 색 코드, 여러 장으로 파일 옮기기는 아직 만들고 있습니다. 형식은 0.x
@@ -18,16 +19,18 @@ QR 코드보다 적은 모듈에 담습니다.
 
 | 내용 | 바이트 | NMT Code | QR 코드 |
 |---|---:|---:|---:|
-| `https://github.com/needmoretruth/nmtcode` | 40 | 24 × 24 = 576 | 29 × 29 = 841 |
-| 한국어 문장, UTF-8로 84바이트 | 84 | 32 × 32 = 1,024 | 37 × 37 = 1,369 (UTF-8) · 33 × 33 = 1,089 (EUC-KR) |
-| 87바이트 영어 문장 | 87 | 32 × 32 = 1,024 | 37 × 37 = 1,369 |
-| 숫자 50개 | 50 | 24 × 24 = 576 | 25 × 25 = 625 |
+| `https://github.com/needmoretruth/nmtcode` | 40 | 20 × 28 = 560 | 29 × 29 = 841 |
+| 한국어 문장, UTF-8로 84바이트 | 84 | 24 × 36 = 864 | 37 × 37 = 1,369 (UTF-8) · 33 × 33 = 1,089 (EUC-KR) |
+| 87바이트 영어 문장 | 87 | 24 × 36 = 864 | 37 × 37 = 1,369 |
+| 숫자 50개 | 50 | 20 × 28 = 560 | 25 × 25 = 625 |
 
 - 두 코드 모두 가장 낮은 오류 정정 수준입니다. 바이트의 약 7.5%(NMT Code)와 7%(QR 코드)를
   되살립니다. QR 코드는 그 내용이 들어가는 가장 작은 버전입니다. QR 리더 중에는 한국어를 UTF-8일
   때만 제대로 읽는 것이 많습니다.
 - 모듈 수에 여백은 넣지 않았습니다. NMT Code는 네 변에 2모듈씩, QR 코드는 4모듈씩 필요합니다.
-- 코드 옆의 QR 코드만큼 그림이 커집니다. `--no-qr`을 주면 빠집니다.
+- NMT Code는 긴 변이 짧은 변의 두 배를 넘지 않는 직사각형이라 정사각형이 아닐 때가 있습니다.
+- 모듈 수는 코드만 센 것입니다. `--qr`로 옆에 QR 코드를 붙이면 그림은 같은 내용의 QR 코드보다
+  커집니다.
 - 2026-09-29에 nmtcode 0.0.1, zxing-cpp 3.1.1, segno 1.6.6으로 쟀습니다. 카메라로 읽히는 거리와
   실패율은 아직 재지 않았습니다.
 
@@ -87,7 +90,7 @@ for grid in nmtcode_detect::read_png(&png)? {
 | `nmtcode-ecc` | GF(2^8) 위의 리드-솔로몬 오류 정정 | ✅ |
 | `nmtcode-payload` | 코덱: 그대로, 숫자, 영숫자, 토큰 표, 한글 묶음, brotli | ✅ brotli 없이 |
 | `nmtcode-symbol` | 찾기 무늬, 기준 표시, 모듈 배치, 화이트닝 | ✅ |
-| `nmtcode-render` | 옆에 QR 코드를 붙인 PNG · SVG 출력 | |
+| `nmtcode-render` | PNG · SVG 출력, 옆에 QR 코드를 붙이거나 빼서 | |
 | `nmtcode-detect` | 렌더러가 만든 PNG에서 코드 찾기 | |
 | `nmtcode-cli` | `nmtcode` 명령 | |
 
@@ -95,7 +98,7 @@ for grid in nmtcode_detect::read_png(&png)? {
 
 ## 명세
 
-형식은 [`spec/`](spec/01-scope-and-conventions.md)에 영어로 적혀 있고, 지금은 초안 0.1입니다. 비트
+형식은 [`spec/`](spec/01-scope-and-conventions.md)에 영어로 적혀 있고, 지금은 초안 0.2입니다. 비트
 하나까지 정해 두어서, 다른 프로그램이 이 코드 없이도 NMT Code를 만들고 읽을 수 있습니다. 명세의
 계산 예시와 완성된 시험 코드([부록 A](spec/annex-a-test-vectors.md))는 이 저장소의 시험입니다.
 

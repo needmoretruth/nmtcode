@@ -11,7 +11,8 @@ pub enum Corner {
     TopRight,
     /// Bottom left: all dark, a solid 5 × 5 square.
     BottomLeft,
-    /// Bottom right: two light triangles on either side of a dark anti-diagonal.
+    /// Bottom right: a 3 × 3 light area with one dark module in the corner nearest the symbol's
+    /// centre.
     BottomRight,
 }
 
@@ -35,7 +36,7 @@ const fn parse(rows: [&[u8; 5]; 5]) -> [[bool; 5]; 5] {
 const TOP_LEFT: [[bool; 5]; 5] = parse([b"#####", b"#oo##", b"#oo##", b"#####", b"#####"]);
 const TOP_RIGHT: [[bool; 5]; 5] = parse([b"#####", b"##oo#", b"#####", b"##oo#", b"#####"]);
 const BOTTOM_LEFT: [[bool; 5]; 5] = parse([b"#####", b"#####", b"#####", b"#####", b"#####"]);
-const BOTTOM_RIGHT: [[bool; 5]; 5] = parse([b"#####", b"#oo##", b"#o#o#", b"##oo#", b"#####"]);
+const BOTTOM_RIGHT: [[bool; 5]; 5] = parse([b"#####", b"##oo#", b"#ooo#", b"#ooo#", b"#####"]);
 
 impl Corner {
     /// All four corners in the order top left, top right, bottom left, bottom right.

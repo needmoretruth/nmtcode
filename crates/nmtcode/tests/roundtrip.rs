@@ -15,6 +15,7 @@ fn side(max: u32) -> impl Strategy<Value = u32> {
 fn size_rule() -> impl Strategy<Value = SizeRule> {
     prop_oneof![
         Just(SizeRule::SmallestSquare),
+        Just(SizeRule::Recommended),
         (side(160), side(160)).prop_map(|(width, height)| SizeRule::Exact { width, height }),
         (1u32..=5, 1u32..=5, proptest::option::of(side(400)), proptest::option::of(side(400)))
             .prop_map(|(a, b, max_width, max_height)| {
@@ -69,6 +70,9 @@ fn round_trip(
     assert_eq!(symbol.grid().height(), symbol.height());
     match options.size {
         SizeRule::SmallestSquare => assert_eq!(symbol.width(), symbol.height()),
+        SizeRule::Recommended => {
+            assert!(symbol.width() <= 2 * symbol.height() && symbol.height() <= 2 * symbol.width());
+        }
         SizeRule::Exact { width, height } => {
             assert_eq!((symbol.width(), symbol.height()), (width, height));
         }
@@ -180,8 +184,9 @@ proptest! {
         seed in any::<u8>(),
     ) {
         let k = capacity(width, height, level).unwrap();
-        // Stored, single record of type 0: lead byte, Lb, type, content, CRC-32C (3.2.6).
-        let header = |len: usize| 1 + nmtcode_core::leb128_len(u32::try_from(len + 1).unwrap()) + 1;
+        // Stored, single record of type 0: lead byte, echo byte, Lb, type, content, CRC-32C
+        // (3.2.6).
+        let header = |len: usize| 2 + nmtcode_core::leb128_len(u32::try_from(len + 1).unwrap()) + 1;
         let Some(len) = (0..k).rev().find(|&len| header(len) + len + 4 == k) else {
             // No length gives exactly K (the body length field grows by a byte at that point).
             return Ok(());

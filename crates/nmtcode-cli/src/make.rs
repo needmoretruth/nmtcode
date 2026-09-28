@@ -34,6 +34,7 @@ const SPECS: &[OptionSpec] = &[
     value("module-px"),
     value("dpi"),
     value("quiet-zone"),
+    flag("qr"),
     flag("no-qr"),
     value("codec"),
 ];
@@ -171,7 +172,7 @@ fn size_rule(parsed: &crate::args::Parsed) -> Result<SizeRule, UsageError> {
             Err(UsageError(msg::SIZE_WITH_MAXIMUM.to_owned()))
         }
         (Some((width, height)), None, None) => Ok(SizeRule::Exact { width, height }),
-        (None, None, None) => Ok(SizeRule::SmallestSquare),
+        (None, None, None) => Ok(SizeRule::Recommended),
         (None, max_width, max_height) => {
             Ok(SizeRule::Constrained(SizeConstraints { aspect_ratio: None, max_width, max_height }))
         }
@@ -203,7 +204,13 @@ fn render_options(
     if let Some(quiet_zone) = quiet_zone {
         options.quiet_zone = quiet_zone;
     }
-    options.bootstrap = !parsed.flag("no-qr")?;
+    // The bootstrap QR Code is on by default only with the print profile (8.5).
+    options.bootstrap = match (parsed.flag("qr")?, parsed.flag("no-qr")?) {
+        (true, true) => return Err(UsageError(msg::QR_AND_NO_QR.to_owned()).into()),
+        (true, false) => true,
+        (false, true) => false,
+        (false, false) => profile == Profile::Print,
+    };
     Ok(options)
 }
 

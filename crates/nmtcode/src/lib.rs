@@ -1,7 +1,7 @@
-//! NMT Code: a two-dimensional code that holds more than a QR Code of the same area. Encode
-//! content to a symbol and decode it back.
+//! NMT Code: a two-dimensional code designed to hold more than a QR Code of the same area.
+//! Encode content to a symbol and decode it back.
 //!
-//! This crate runs the whole base-layer pipeline of the NMT Code specification 0.1 (chapter 1,
+//! This crate runs the whole base-layer pipeline of the NMT Code specification 0.2 (chapter 1,
 //! 1.3) on top of the layer crates:
 //!
 //! | Step | Encoding ([`encode`]) | Decoding ([`decode`]) | Crate |
@@ -20,7 +20,7 @@
 //! use nmtcode::{DecodeOptions, EncodeOptions, PresentAs, decode, encode_url};
 //!
 //! let symbol = encode_url("https://github.com/needmoretruth/nmtcode", &EncodeOptions::default())?;
-//! assert_eq!((symbol.width(), symbol.height()), (24, 24));
+//! assert_eq!((symbol.width(), symbol.height()), (20, 28));
 //!
 //! let decoded = decode(symbol.grid(), &DecodeOptions::default())?;
 //! assert_eq!(decoded.records[0].present_as, PresentAs::Url);
@@ -36,7 +36,7 @@ mod decode;
 mod encode;
 mod size;
 
-pub use decode::{DecodeError, DecodeOptions, Decoded, DecodedRecord, decode};
+pub use decode::{DecodeError, DecodeOptions, Decoded, DecodedRecord, MAX_AREA, decode};
 pub use encode::{
     EncodeError, EncodeOptions, Profile, Symbol, encode, encode_file, encode_text, encode_url,
 };
@@ -53,6 +53,6 @@ pub use nmtcode_ecc::BlockSplit;
 pub use nmtcode_core::Error as SpecError;
 
 pub use nmtcode_core::{
-    ContentType, FormatWord, MAX_CONTENT_LEN_V0, ModuleGrid, Outcome, PresentAs, Record,
-    RecordForm, Role, SymbolClass, ValueNotice, safe_file_name,
+    ContentType, FormatWord, MAX_CONTENT_LEN_V0, MAX_STATIC_CONTENT_LEN_V0, ModuleGrid, Outcome,
+    PresentAs, Record, RecordForm, Role, SymbolClass, ValueNotice, safe_file_name,
 };

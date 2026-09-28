@@ -160,7 +160,9 @@ proptest! {
         }
     }
 
-    /// Any damage to one format copy: the other copy still gives the symbol.
+    /// Any damage to one format copy: the other copy gives the symbol, or, when the damaged copy
+    /// decodes to another word (2.7, 3.3% of random words pass step 2), the symbol is rejected
+    /// with `E_FORMAT_CONFLICT`. Never other content.
     #[test]
     fn one_format_copy_damaged(
         text in "[ -~]{0,100}",
@@ -178,8 +180,14 @@ proptest! {
                 grid.toggle(x, y);
             }
         }
-        let decoded = decode(&grid, &DecodeOptions::default()).unwrap();
-        prop_assert_eq!(&decoded.records, &original.records);
+        match decode(&grid, &DecodeOptions::default()) {
+            Ok(decoded) => prop_assert_eq!(&decoded.records, &original.records),
+            Err(error) => prop_assert_eq!(error.error(), SpecError::FormatConflict),
+        }
+        // Up to 3 bit errors in the damaged copy always leave the symbol readable.
+        if mask.count_ones() <= 3 {
+            prop_assert!(decode(&grid, &DecodeOptions::default()).is_ok());
+        }
     }
 
     /// Exactly 4 bit errors in each copy: no copy decodes, since the minimum distance is 8.
@@ -249,10 +257,11 @@ fn a_grid_of_another_size_than_its_format_word_is_unreadable() {
     assert_eq!(decode(&tiny, &DecodeOptions::default()).unwrap_err().name(), "E_FORMAT_UNREADABLE");
 }
 
-/// 2.7 step 4: when the copies decode to different words, the one with fewer errors (copy A on a
-/// tie) is tried first, and the other word when the base layer fails under the first.
+/// 2.7 steps 3 and 4: two copies that decode to different words reject the symbol, and no word
+/// is tried after the other; a copy whose W and H do not fit the grid is not decoded, and the
+/// other copy gives the symbol.
 #[test]
-fn the_other_format_word_is_tried_when_the_first_fails() {
+fn format_copies_that_differ_reject_the_symbol() {
     let symbol = encode_text("NMT Code", &EncodeOptions::default()).unwrap();
     let original = clean(&symbol);
     let positions = format_positions(20, 20).unwrap();
@@ -261,15 +270,48 @@ fn the_other_format_word_is_tried_when_the_first_fails() {
             grid.set(x, y, word >> (46 - i) & 1 == 1);
         }
     };
-    // The same size at another level: the Reed-Solomon split differs and the base layer fails.
+    // The same size at another level: both copies decode, to different words.
     let other_level = FormatWord::new(SymbolClass::Static, 20, 20, 2, 0, 0).unwrap();
-    // Another size: it does not fit the grid.
+    let mut grid = symbol.grid().clone();
+    write_copy_a(&mut grid, other_level.encode());
+    let error = decode(&grid, &DecodeOptions::default()).unwrap_err();
+    assert_eq!((error.error(), error.outcome()), (SpecError::FormatConflict, Outcome::Damaged));
+    // Another size: copy A does not fit the grid, so copy B alone gives the symbol.
     let other_size = FormatWord::new(SymbolClass::Static, 24, 24, 0, 0, 0).unwrap();
-    for word in [other_level, other_size] {
-        let mut grid = symbol.grid().clone();
-        write_copy_a(&mut grid, word.encode());
-        let decoded = decode(&grid, &DecodeOptions::default()).unwrap();
-        assert_eq!(decoded.records, original.records);
-        assert_eq!(decoded.format, *symbol.format());
+    let mut grid = symbol.grid().clone();
+    write_copy_a(&mut grid, other_size.encode());
+    let decoded = decode(&grid, &DecodeOptions::default()).unwrap();
+    assert_eq!(decoded.records, original.records);
+    assert_eq!(decoded.format, *symbol.format());
+}
+
+/// 2.7 step 5: an area above the reader's largest area rejects the symbol with `E_SIZE_LIMIT`;
+/// a symbol of exactly that area decodes.
+#[test]
+fn an_area_above_the_readers_largest_is_unsupported() {
+    let symbol = encode_text("NMT Code", &EncodeOptions::default()).unwrap();
+    let area = u64::from(symbol.width() * symbol.height());
+    let at = DecodeOptions { max_area: area, ..DecodeOptions::default() };
+    assert_eq!(decode(symbol.grid(), &at).unwrap().records, clean(&symbol).records);
+    let below = DecodeOptions { max_area: area - 1, ..DecodeOptions::default() };
+    let error = decode(symbol.grid(), &below).unwrap_err();
+    assert_eq!((error.error(), error.outcome()), (SpecError::SizeLimit, Outcome::Unsupported));
+    assert_eq!(nmtcode::MAX_AREA, 4108 * 4108);
+    assert_eq!(DecodeOptions::default().max_area, nmtcode::MAX_AREA);
+}
+
+/// 2.5 and 5.11: a symbol taken as upright when it is turned by 180° reads copy B where copy A
+/// should be and copy A where copy B should be. Neither decodes under the other copy's mask.
+#[test]
+fn a_symbol_turned_by_180_degrees_fails_at_the_format_word() {
+    let symbol = encode_text("NMT Code", &EncodeOptions::default()).unwrap();
+    let (w, h) = (symbol.width(), symbol.height());
+    let mut turned = ModuleGrid::new(w, h).unwrap();
+    for y in 0..h {
+        for x in 0..w {
+            turned.set(x, y, symbol.grid().get(w - 1 - x, h - 1 - y).unwrap());
+        }
     }
+    let error = decode(&turned, &DecodeOptions::default()).unwrap_err();
+    assert_eq!(error.error(), SpecError::FormatUnreadable);
 }

@@ -9,89 +9,35 @@
 )]
 #![allow(dead_code, clippy::unreadable_literal)]
 
-use nmtcode_core::ModuleGrid;
+use nmtcode_core::{FormatWord, ModuleGrid, SymbolClass};
 use nmtcode_detect::LumaImage;
+use nmtcode_symbol::{Corner, Layout};
 
-/// Specification annex A, A.2.7: the complete 24 × 24 module matrix, `#` dark.
-pub const A27_ROWS: [&str; 24] = [
-    "#####.#.#.#..#..#..#####",
-    "#..##...##.##...#..##..#",
-    "#..##.######.#####.#####",
-    "#####..##....##....##..#",
-    "#####.##.#..######.#####",
-    ".......#####.#####......",
-    ".#....##.##.#......##.#.",
-    "#.##.#..##..#.###.#..#..",
-    "..###.######.##..###..##",
-    ".###.###..#..##.##.##...",
-    "....##.#.........##..#.#",
-    "#...#.###.###.#..#.#.#..",
-    "#..######.##....##...##.",
-    "..###..#..#...##....#...",
-    "#.###.#.#.#...#.#.#.###.",
-    "#..#..#..###.#.###.###..",
-    ".#....#######.##..#.##.#",
-    ".##..###...#...##.....#.",
-    "......##.#..##.##.......",
-    "#####...#####.#.##.#####",
-    "#####.###..###.##..#..##",
-    "#####..##.##.#####.#.#.#",
-    "#####..##..#####...##..#",
-    "#####.###...##.#.#.#####",
-];
-
-/// The same matrix as 24-bit hexadecimal rows, x = 0 most significant (A.2.7).
-pub const A27_HEX: [u32; 24] = [
-    0xFAA49F, 0x98D899, 0x9BF7DF, 0xF98619, 0xFB4FDF, 0x01F7C0, 0x43681A, 0xB4CBA4, 0x3BF673,
-    0x7726D8, 0x0D0065, 0x8BBA54, 0x9FB0C6, 0x392308, 0xBAA2AE, 0x9275DC, 0x43FB2D, 0x671182,
-    0x034D80, 0xF8FADF, 0xFB9D93, 0xF9B7D5, 0xF99F19, 0xFB8D5F,
-];
-
-/// Specification 2.8: the 20 × 20 map with both format copies. `#` dark, `o` light, `-`
-/// separator (light), `.` data (unfilled in the specification).
-pub const MAP_2_8: [&str; 20] = [
-    "#####-#o#o....-#####",
-    "#oo##-oo##....-##oo#",
-    "#oo##-###o....-#####",
-    "#####-###o....-##oo#",
-    "#####-##o#....-#####",
-    "------ooo.....------",
-    "o#o###..............",
-    "o#oo##..............",
-    "oo##oo..............",
-    "o##oo#..............",
-    "..............#oo##o",
-    "..............oo##oo",
-    "..............##oo#o",
-    "..............###o#o",
-    "------.....ooo------",
-    "#####-....#o##-#####",
-    "#####-....o###-#oo##",
-    "#####-....o###-#o#o#",
-    "#####-....##oo-##oo#",
-    "#####-....o#o#-#####",
-];
-
-pub fn a27() -> ModuleGrid {
-    ModuleGrid::from_rows(&A27_ROWS).unwrap()
+/// A `width` × `height` symbol as the generator draws it (chapter 5): the finders, separators,
+/// reference marks and both format copies of a level-0 static format word, and a codeword
+/// stream from `seed` on the data modules.
+pub fn drawn_symbol(width: u32, height: u32, seed: u64) -> ModuleGrid {
+    let layout = Layout::new(width, height).unwrap();
+    let word = FormatWord::new(SymbolClass::Static, width, height, 0, 0, 0).unwrap();
+    let mut rng = Rng(seed);
+    let stream: Vec<u8> = (0..layout.codeword_count()).map(|_| rng.next() as u8).collect();
+    layout.draw_copies(word.encode_copies(), &stream).unwrap()
 }
 
-/// The 2.8 map with its data modules filled from `seed`.
-pub fn map_2_8(seed: u64) -> ModuleGrid {
+/// A 24 × 24 symbol at level 0 with data from a fixed seed.
+pub fn symbol_24() -> ModuleGrid {
+    drawn_symbol(24, 24, 0x0A27)
+}
+
+/// The smallest symbol, 20 × 20, with the format word of 2.8 (level 1) on both copies and data
+/// from `seed`.
+pub fn symbol_20(seed: u64) -> ModuleGrid {
+    let layout = Layout::new(20, 20).unwrap();
+    let word = FormatWord::new(SymbolClass::Static, 20, 20, 1, 0, 0).unwrap();
+    assert_eq!(word.encode_copies(), [0x51F7_680D_3ACD, 0x3FCE_35FD_8A41]);
     let mut rng = Rng(seed);
-    let rows: Vec<String> = MAP_2_8
-        .iter()
-        .map(|row| {
-            row.chars()
-                .map(|c| match c {
-                    '#' => '#',
-                    '.' if rng.bit() => '#',
-                    _ => '.',
-                })
-                .collect()
-        })
-        .collect();
-    ModuleGrid::from_rows(&rows).unwrap()
+    let stream: Vec<u8> = (0..layout.codeword_count()).map(|_| rng.next() as u8).collect();
+    layout.draw_copies(word.encode_copies(), &stream).unwrap()
 }
 
 /// The `SplitMix64` generator.
@@ -115,14 +61,6 @@ impl Rng {
     }
 }
 
-/// The four finders of 5.3.1, upright, TL, TR, BL, BR.
-const FINDERS: [[&str; 5]; 4] = [
-    ["#####", "#..##", "#..##", "#####", "#####"],
-    ["#####", "##..#", "#####", "##..#", "#####"],
-    ["#####", "#####", "#####", "#####", "#####"],
-    ["#####", "#..##", "#.#.#", "##..#", "#####"],
-];
-
 /// Reference-mark lines of 5.6.1 for a side of `z` modules.
 pub fn mark_lines(z: u32) -> Vec<u32> {
     let s = z - 5;
@@ -140,11 +78,11 @@ pub fn make_symbol(w: u32, h: u32, seed: u64) -> ModuleGrid {
             grid.set(x, y, rng.bit());
         }
     }
-    let origins = [(0, 0), (w - 5, 0), (0, h - 5), (w - 5, h - 5)];
-    for (kind, &(ox, oy)) in origins.iter().enumerate() {
-        for (y, row) in FINDERS[kind].iter().enumerate() {
-            for (x, c) in row.chars().enumerate() {
-                grid.set(ox + x as u32, oy + y as u32, c == '#');
+    for corner in Corner::ALL {
+        let (ox, oy) = corner.origin(w, h).unwrap();
+        for (y, row) in (0..).zip(corner.pattern()) {
+            for (x, dark) in (0..).zip(row) {
+                grid.set(ox + x, oy + y, dark);
             }
         }
     }

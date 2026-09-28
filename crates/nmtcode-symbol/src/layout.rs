@@ -352,31 +352,35 @@ impl Layout {
         usize::try_from(*self.rank.get(word)? + before).ok()
     }
 
-    /// Draws a symbol: the function patterns (5.3, 5.4, 5.6), both copies of the format
-    /// codeword (2.6, 5.5), the codeword stream on the data modules in placement order with each
+    /// Draws a symbol: the function patterns (5.3, 5.4, 5.6), the two copies of the format word
+    /// (2.6, 5.5), the codeword stream on the data modules in placement order with each
     /// codeword's most significant bit first (5.8, 5.9), and the remainder modules with bit 0,
     /// every data module combined by exclusive or with the whitening sequence (5.10).
     ///
-    /// `format_codeword` is the sent word F = C XOR MASK of chapter 2 (2.5), in the low 47 bits:
-    /// integer bit `46 − i` is bit index `i` of 2.4.3 and goes on modules A\[i\] and B\[i\].
-    /// `stream` is c\[0\] … c\[N − 1\] of chapter 4 (4.8.2).
+    /// `format` is `[F_A, F_B]`, the sent words of copy A and copy B of chapter 2 (2.5): the
+    /// codeword U XOR `MASK_A` and U XOR `MASK_B`, as `nmtcode_core::FormatWord::encode_copies`
+    /// returns them. In each, integer bit `46 − i` is bit index `i` of 2.4.3: bit `i` of `F_A`
+    /// goes on module A\[i\] and bit `i` of `F_B` on module B\[i\]. `stream` is c\[0\] …
+    /// c\[N − 1\] of chapter 4 (4.8.2).
     ///
     /// # Errors
     ///
     /// [`SymbolError::StreamLength`] when `stream` does not have exactly N bytes,
-    /// [`SymbolError::FormatCodewordTooWide`] when `format_codeword` has a bit above bit 46, and
+    /// [`SymbolError::FormatCodewordTooWide`] when a format word has a bit above bit 46, and
     /// [`SymbolError::TooLarge`] when the grid cannot be allocated.
-    pub fn draw(&self, format_codeword: u64, stream: &[u8]) -> Result<ModuleGrid, SymbolError> {
+    pub fn draw_copies(&self, format: [u64; 2], stream: &[u8]) -> Result<ModuleGrid, SymbolError> {
         if stream.len() != self.counts.codewords {
             return Err(SymbolError::StreamLength {
                 expected: self.counts.codewords,
                 actual: stream.len(),
             });
         }
-        check_codeword(format_codeword)?;
+        for word in format {
+            check_codeword(word)?;
+        }
         let mut grid = ModuleGrid::new(self.width, self.height).ok_or(SymbolError::TooLarge)?;
         self.draw_function_patterns(&mut grid);
-        write_format_copies(&mut grid, format_codeword)?;
+        write_format_copies(&mut grid, format)?;
 
         let mut positions = self.placement();
         let mut whitening = Whitening::new();

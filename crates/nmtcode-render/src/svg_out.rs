@@ -1,4 +1,7 @@
 //! SVG output: one white background rectangle and one black path of merged rectangles.
+//!
+//! Without print growth compensation the view box is in modules. With it (specification 1.5)
+//! the view box is in pixels, and the rectangles are those of the eroded canvas.
 
 use core::fmt::Write;
 
@@ -6,6 +9,7 @@ use nmtcode_core::ModuleGrid;
 
 use crate::RenderOptions;
 use crate::canvas::Canvas;
+use crate::growth::{band_grid, band_start};
 
 /// A rectangle of dark modules in canvas coordinates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -90,16 +94,41 @@ fn millimetres(px: u64, dpi: u32) -> String {
     format!("{}mm", decimal_e4(e4))
 }
 
-pub(crate) fn write(canvas: &Canvas, options: &RenderOptions) -> String {
+/// The dark rectangles and the view box size, in modules without growth compensation and in
+/// pixels with it.
+fn shapes(canvas: &Canvas, options: &RenderOptions) -> Option<(Vec<Rect>, u64, u64)> {
     let layout = &canvas.layout;
-    let (cw, ch) = (layout.canvas_width, layout.canvas_height);
+    let k = options.print_growth_dots;
+    if k == 0 {
+        let rects = merge_rects(&canvas.modules);
+        return Some((rects, u64::from(layout.canvas_width), u64::from(layout.canvas_height)));
+    }
+    let s = layout.module_px;
+    let grid = band_grid(&canvas.modules, s, k)?;
+    let to_px = |cell: u32| u32::try_from(band_start(cell, s, k)).ok();
+    let rects = merge_rects(&grid)
+        .into_iter()
+        .map(|r| {
+            let (x, y) = (to_px(r.x)?, to_px(r.y)?);
+            let width = to_px(r.x + r.width)? - x;
+            let height = to_px(r.y + r.height)? - y;
+            Some(Rect { y, x, width, height })
+        })
+        .collect::<Option<Vec<Rect>>>()?;
+    // Bands of width 0 cannot occur for k ≥ 1, but a rectangle made only of them would be empty.
+    let rects = rects.into_iter().filter(|r| r.width > 0 && r.height > 0).collect();
+    Some((rects, layout.pixel_width(), layout.pixel_height()))
+}
+
+pub(crate) fn write(canvas: &Canvas, options: &RenderOptions) -> Option<String> {
+    let layout = &canvas.layout;
     let (width, height) = match options.dpi {
         Some(dpi) => {
             (millimetres(layout.pixel_width(), dpi), millimetres(layout.pixel_height(), dpi))
         }
         None => (layout.pixel_width().to_string(), layout.pixel_height().to_string()),
     };
-    let rects = merge_rects(&canvas.modules);
+    let (rects, cw, ch) = shapes(canvas, options)?;
     let mut svg = String::with_capacity(400 + rects.len() * 24);
     // `write!` into a String cannot fail.
     let _ = writeln!(svg, r#"<?xml version="1.0" encoding="UTF-8"?>"#);
@@ -121,7 +150,7 @@ pub(crate) fn write(canvas: &Canvas, options: &RenderOptions) -> String {
         svg.push_str("\"/>\n");
     }
     svg.push_str("</svg>\n");
-    svg
+    Some(svg)
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 //! Payload codecs of NMT Code: stored, digits, upper-case alphanumeric, token
 //! table with a short-text model, Hangul packing and brotli.
 //!
-//! This crate implements chapter 6 of the NMT Code specification 0.1
+//! This crate implements chapter 6 of the NMT Code specification 0.2
 //! (`spec/06-payload-coding.md`): it turns the content bytes of a symbol into
 //! the container's (`c`, `d`, `L`, `C`) and back. The container itself
 //! (chapter 3) is built elsewhere.
@@ -34,6 +34,22 @@ pub mod leb128;
 /// `MAX_CONTENT_LEN_V0` of 6.4: the absolute cap on `L` of one container in
 /// format version 0 (16 MiB).
 pub const MAX_CONTENT_LEN_V0: u32 = 16_777_216;
+
+/// `MAX_STATIC_CONTENT_LEN_V0` of 6.4: the cap on `L` of the container of a
+/// static symbol (symbol class 0) in format version 0 (1 MiB). Every container
+/// with a codec belongs to a static symbol in this version, so a reader passes
+/// a `limit` of at most this value to [`decode`].
+pub const MAX_STATIC_CONTENT_LEN_V0: u32 = 1_048_576;
+
+/// The expansion bound of 6.4 rule 2: `L` ≤ `ratio` · (`Lc` + 4), computed
+/// without overflow. Codec 3 uses [`codec3::EXPANSION_MAX`] and codec 5
+/// [`codec5::EXPANSION_MAX`] as `ratio`.
+pub fn within_expansion(decoded_len: u32, coded_len: usize, ratio: u32) -> bool {
+    // A coded field longer than u64 can count only allows more.
+    let coded = u64::try_from(coded_len).unwrap_or(u64::MAX);
+    let bound = coded.saturating_add(4).saturating_mul(u64::from(ratio));
+    u64::from(decoded_len) <= bound
+}
 
 /// The output of the encoder and the input of the decoder (6.1).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -174,8 +190,10 @@ impl Default for EncodeOptions {
 ///
 /// For codec 3 the candidates are model 0 and every registered short-text
 /// model; for codec 5, dictionary 0 (no brotli prefix dictionary is registered
-/// in 0.1). Returns an empty vector when `content` is longer than
-/// [`MAX_CONTENT_LEN_V0`], because no container can carry it.
+/// in 0.1). A codec 3 or codec 5 output that breaks the expansion bound of 6.4
+/// is not a candidate, since a reader rejects it. Returns an empty vector when
+/// `content` is longer than [`MAX_CONTENT_LEN_V0`], because no container can
+/// carry it.
 pub fn candidates(content: &[u8], options: &EncodeOptions) -> Vec<Coded> {
     let Ok(decoded_len) = u32::try_from(content.len()) else {
         return Vec::new();
@@ -196,14 +214,21 @@ pub fn candidates(content: &[u8], options: &EncodeOptions) -> Vec<Coded> {
     {
         out.push(coded(codec2::ID, 0, bytes));
     }
+    let bounded = |bytes: &Vec<u8>, ratio| within_expansion(decoded_len, bytes.len(), ratio);
     if options.token_model {
-        out.push(coded(codec3::ID, 0, codec3::encode(content, &codec3::Model::model0())));
+        let bytes = codec3::encode(content, &codec3::Model::model0());
+        if bounded(&bytes, codec3::EXPANSION_MAX) {
+            out.push(coded(codec3::ID, 0, bytes));
+        }
         for entry in dictionary::REGISTRY
             .iter()
             .filter(|entry| entry.kind == dictionary::DictionaryKind::ShortTextModel)
         {
             if let Ok(model) = codec3::Model::from_dictionary(entry.bytes) {
-                out.push(coded(codec3::ID, entry.id, codec3::encode(content, &model)));
+                let bytes = codec3::encode(content, &model);
+                if bounded(&bytes, codec3::EXPANSION_MAX) {
+                    out.push(coded(codec3::ID, entry.id, bytes));
+                }
             }
         }
     }
@@ -214,6 +239,7 @@ pub fn candidates(content: &[u8], options: &EncodeOptions) -> Vec<Coded> {
     }
     if options.brotli
         && let Some(bytes) = codec5::encode(content)
+        && bounded(&bytes, codec5::EXPANSION_MAX)
     {
         out.push(coded(codec5::ID, 0, bytes));
     }

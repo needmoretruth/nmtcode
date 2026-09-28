@@ -1,30 +1,25 @@
 //! Finder patterns (specification 5.3): connected dark regions, then classification of each
 //! candidate by its 7 × 7 cells.
 
+use nmtcode_symbol::Corner;
+
 use crate::LumaImage;
 use crate::num::{count_f64, floor_i32};
 
-/// Finder kinds, indexed by corner.
+/// Finder kinds, indexed by corner in the order of `Corner::ALL`.
 pub(crate) const TL: usize = 0;
 pub(crate) const TR: usize = 1;
 pub(crate) const BL: usize = 2;
 pub(crate) const BR: usize = 3;
 
-/// The four finders of 5.3.1 in the upright symbol, row by row, `#` dark.
-pub(crate) const FINDERS: [[&str; 5]; 4] = [
-    ["#####", "#..##", "#..##", "#####", "#####"],
-    ["#####", "##..#", "#####", "##..#", "#####"],
-    ["#####", "#####", "#####", "#####", "#####"],
-    ["#####", "#..##", "#.#.#", "##..#", "#####"],
-];
-
-/// Module (`x`, `y`) of the 5 × 5 finder `kind` in the upright symbol; `true` = dark.
+/// Module (`x`, `y`) of the 5 × 5 finder `kind` in the upright symbol (5.3.1); `true` = dark.
+/// The patterns are those of `nmtcode-symbol`, so the reader and the generator cannot drift
+/// apart.
 pub(crate) fn finder_module(kind: usize, x: usize, y: usize) -> bool {
-    FINDERS
-        .get(kind)
-        .and_then(|rows| rows.get(y))
-        .and_then(|row| row.as_bytes().get(x))
-        .is_some_and(|&c| c == b'#')
+    let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+        return false;
+    };
+    Corner::ALL.get(kind).and_then(|corner| corner.module(x, y)).unwrap_or(false)
 }
 
 /// The inner 3 × 3 of finder `kind`, row-major.
@@ -482,7 +477,7 @@ mod tests {
         assert_eq!(inner(TL), [false, false, true, false, false, true, true, true, true]);
         assert_eq!(inner(TR), [true, false, false, true, true, true, true, false, false]);
         assert_eq!(inner(BL), [true; 9]);
-        assert_eq!(inner(BR), [false, false, true, false, true, false, true, false, false]);
+        assert_eq!(inner(BR), [true, false, false, false, false, false, false, false, false]);
     }
 
     #[test]
