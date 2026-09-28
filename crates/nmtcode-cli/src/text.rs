@@ -29,7 +29,7 @@ Usage: nmtcode make [--text TEXT | --url URL | --file PATH] [options]
 
 Content, one of (without any, UTF-8 text is read from standard input):
   --text TEXT          text
-  --url URL            a URL; readers show it in full and open it only when asked
+  --url URL            a URL
   --file PATH          a file, stored with its name
 
 Output:
