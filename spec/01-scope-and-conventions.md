@@ -48,7 +48,7 @@ A symbol is a rectangle of W × H square modules surrounded by a quiet zone. W a
 | Base layer | luminance of data modules | error-corrected container: header with a copy of the format fields, base records, integrity check | 3, 4, 5, 6 |
 | Colour layer (optional) | chroma of data cells | error-corrected extension records | 7 |
 
-Every symbol has a base layer that a black-and-white reader decodes by itself. In a colour symbol, the base layer carries the records that every reader shows and a digest of the whole content. This split is provisional in 0.2.
+Every symbol has a base layer that a black-and-white reader decodes by itself. In a colour symbol, the base layer carries the records that every reader shows and a digest of the whole content.
 
 Encoding order for the base layer:
 
@@ -137,7 +137,7 @@ Rendering rules:
 
 - A **generator** conforms if every symbol it produces follows chapters 2 to 6, and chapter 7 or 8 when it uses a colour profile or a QR bootstrap.
 - A **reader** conforms if it decodes every conforming black-and-white symbol, rejects every symbol that fails a check this specification defines, and never presents data that failed a check as a result. It implements codecs 0 to 5 (chapter 6) and every dictionary registered up to the specification version it states (chapter 6, 6.11).
-- A reader that supports only black and white conforms. When it reads a colour symbol it MUST present the base records (chapter 3). This rule is provisional in 0.2.
+- A reader that supports only black and white conforms. When it reads a colour symbol it MUST present the base records (chapter 3).
 
 ## 1.7 Chapters
 

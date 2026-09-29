@@ -10,6 +10,10 @@
 **/*.rs.bk
 *.pdb
 
+# Release output: the wasm bundle of scripts/build-web.sh and the archives of scripts/package.sh
+/web/pkg/
+/dist/
+
 # AI assistant files — never published
 CLAUDE.md
 CLAUDE.md.*

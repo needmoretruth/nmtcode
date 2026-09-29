@@ -604,3 +604,42 @@ fn a_reversed_image_is_read() {
     assert_ok(&output);
     assert!(stdout(&output).contains(URL), "{}", stdout(&output));
 }
+
+/// A synthetic camera photo (JPEG) of a symbol holding `URL`: tilted, turned, blurred, noisy.
+fn camera_jpeg() -> Vec<u8> {
+    let symbol = nmtcode::encode_url(URL, &EncodeOptions::default()).unwrap();
+    let canvas = nmtcode_sim::canvas(&symbol, false).unwrap();
+    let channel =
+        nmtcode_sim::Channel { width: 960, height: 720, blur: 0.35, ..Default::default() };
+    nmtcode_sim::render(&canvas, &channel, 7).unwrap().jpeg.unwrap()
+}
+
+#[test]
+fn a_camera_photo_in_jpeg_is_read() {
+    let dir = TempDir::new("jpeg");
+    let path = dir.path("photo.jpg");
+    std::fs::write(&path, camera_jpeg()).unwrap();
+    let output = run(&["read", path_str(&path)]);
+    assert_ok(&output);
+    assert_eq!(stdout(&output), format!("{URL}\n"));
+    let from_stdin = run_with_stdin(&["read", "-"], &camera_jpeg());
+    assert_ok(&from_stdin);
+    assert_eq!(stdout(&from_stdin), format!("{URL}\n"));
+    let read = stdout(&run(&["read", "--help"]));
+    assert!(read.contains("JPEG"), "{read}");
+}
+
+#[test]
+fn an_unknown_image_format_is_an_error() {
+    let dir = TempDir::new("unknown");
+    let path = dir.path("image.gif");
+    std::fs::write(&path, b"GIF89a\x01\x00\x01\x00").unwrap();
+    let output = run(&["read", path_str(&path)]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("PNG or JPEG"), "{}", stderr(&output));
+    let jpeg = dir.path("broken.jpg");
+    std::fs::write(&jpeg, [0xFF, 0xD8, 0xFF, 0xE0, 0x00]).unwrap();
+    let output = run(&["read", path_str(&jpeg)]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).contains("JPEG"), "{}", stderr(&output));
+}

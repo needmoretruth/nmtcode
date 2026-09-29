@@ -11,7 +11,10 @@
 mod common;
 
 use common::*;
-use nmtcode_detect::{DetectError, LumaImage, MAX_PIXELS, decode_png, find_symbols, read_png};
+use nmtcode_detect::{
+    DetectError, DetectOptions, LumaImage, MAX_PIXELS, decode_png, find, find_symbols, read_image,
+    read_png,
+};
 use nmtcode_render::{RenderOptions, render_png};
 use proptest::prelude::*;
 
@@ -109,9 +112,50 @@ fn header_with_zero_width() {
 }
 
 #[test]
+fn read_image_knows_png_and_jpeg_by_their_signatures() {
+    assert_eq!(read_image(b""), Err(DetectError::UnknownFormat));
+    assert_eq!(read_image(b"GIF89a"), Err(DetectError::UnknownFormat));
+    assert!(matches!(read_image(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 16]), Err(DetectError::Jpeg(_))));
+    assert_eq!(
+        read_image(&sample_png()).map(|i| i.width),
+        decode_png(&sample_png()).map(|i| i.width)
+    );
+}
+
+/// A baseline JPEG header that declares `width` × `height` 8-bit greyscale pixels, and no data.
+fn jpeg_header(width: u16, height: u16) -> Vec<u8> {
+    let mut out = vec![0xFF, 0xD8];
+    // A quantisation table of ones.
+    out.extend_from_slice(&[0xFF, 0xDB, 0, 67, 0]);
+    out.extend_from_slice(&[1u8; 64]);
+    // SOF0: precision 8, height, width, one component.
+    out.extend_from_slice(&[0xFF, 0xC0, 0, 11, 8]);
+    out.extend_from_slice(&height.to_be_bytes());
+    out.extend_from_slice(&width.to_be_bytes());
+    out.extend_from_slice(&[1, 1, 0x11, 0]);
+    out.extend_from_slice(&[0xFF, 0xD9]);
+    out
+}
+
+#[test]
+fn a_jpeg_too_large_is_refused_before_allocation() {
+    let result = read_image(&jpeg_header(60_000, 60_000));
+    assert!(
+        matches!(
+            result,
+            Err(DetectError::TooLarge { width: 60_000, height: 60_000 } | DetectError::Jpeg(_))
+        ),
+        "{result:?}"
+    );
+    assert!(read_image(&jpeg_header(0, 10)).is_err());
+}
+
+#[test]
 fn errors_display() {
     for e in [
         DetectError::NotPng,
+        DetectError::UnknownFormat,
+        DetectError::Jpeg("z".into()),
         DetectError::Malformed("x".into()),
         DetectError::Unsupported("y".into()),
         DetectError::TooLarge { width: 1, height: 2 },
@@ -143,6 +187,39 @@ proptest! {
         }
         let keep = png.len() - cut % (png.len() / 4);
         let _ = read_png(&png[..keep]);
+    }
+
+    #[test]
+    fn random_bytes_never_panic_read_image(bytes in proptest::collection::vec(any::<u8>(), 0..512)) {
+        let _ = read_image(&bytes);
+        for prefix in [&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A][..], &[0xFF, 0xD8, 0xFF][..]] {
+            let mut prefixed = prefix.to_vec();
+            prefixed.extend_from_slice(&bytes);
+            let _ = read_image(&prefixed);
+        }
+        let mut header = jpeg_header(64, 48);
+        header.truncate(header.len() - 2);
+        header.extend_from_slice(&bytes);
+        let _ = read_image(&header);
+    }
+
+    #[test]
+    fn random_blocks_never_panic_find(
+        width in 1u32..400,
+        height in 1u32..300,
+        seed in any::<u64>(),
+        block in 1u32..16,
+    ) {
+        // Random dark and light blocks of a random size: squares, gaps and edges like a symbol's.
+        let mut rng = Rng(seed);
+        let (bw, bh) = (width.div_ceil(block), height.div_ceil(block));
+        let cells: Vec<u8> = (0..bw * bh).map(|_| if rng.bit() { 20 } else { 230 }).collect();
+        let pixels: Vec<u8> = (0..width * height)
+            .map(|i| cells[((i / width) / block * bw + (i % width) / block) as usize])
+            .collect();
+        let image = LumaImage::new(width, height, pixels).unwrap();
+        let _ = find(&image, &DetectOptions::default());
+        let _ = find(&image, &DetectOptions { max_area: 0, try_inverted: false });
     }
 
     #[test]

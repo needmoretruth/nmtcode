@@ -24,6 +24,8 @@ nmtcode-detect = { workspace = true }
 
 [dev-dependencies]
 nmtcode-symbol = { workspace = true }
+# Synthetic camera photos for the read tests; not published.
+nmtcode-sim = { path = "../nmtcode-sim" }
 png = { workspace = true }
 
 [lints]

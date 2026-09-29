@@ -311,30 +311,33 @@ pub fn run(args: &[OsString]) -> Result<Outcome, Failure> {
         return Err(Failure::Other(msg::not_a_directory(dir)));
     }
     let bytes = read_input(&path)?;
-    let detection = nmtcode_detect::detect_png(&bytes)
+    let image = nmtcode_detect::read_image(&bytes)
         .map_err(|error| Failure::Other(text::detect_error(&error)))?;
-    let grids = detection.symbols;
-    if grids.is_empty() && detection.nested == 0 {
+    let options = DecodeOptions::default();
+    let detect_options =
+        nmtcode_detect::DetectOptions { max_area: options.max_area, ..Default::default() };
+    let scan = nmtcode_detect::find(&image, &detect_options);
+    // Rejected symbols are reported by the detector's rule: nested pairs once, candidates
+    // without a readable format word only when nothing else was read.
+    let errors = scan.reported_errors();
+    if scan.found.is_empty() && errors.is_empty() {
         return Err(Failure::Other(msg::NOT_FOUND.to_owned()));
     }
-    // Nested symbols (specification 5.11) are reported once, after the others: neither the
-    // inner nor the outer symbol is presented.
-    let count = grids.len() + usize::from(detection.nested > 0);
+    let count = scan.found.len() + errors.len();
 
     let terminal = !json && std::io::stdout().is_terminal();
     let mut report =
         Report { stdout: String::new(), stderr: Vec::new(), json: Vec::new(), failed: false };
-    let options = DecodeOptions::default();
-    for (index, grid) in grids.iter().enumerate() {
-        match nmtcode::decode(grid, &options) {
+    for (index, found) in scan.found.iter().enumerate() {
+        match nmtcode::decode_with_erasures(&found.grid, &found.uncertain, &options) {
             Ok(decoded) => {
                 present(&mut report, index, count, &decoded, out.as_deref(), terminal);
             }
             Err(error) => failure(&mut report, index, count, error),
         }
     }
-    if detection.nested > 0 {
-        failure(&mut report, grids.len(), count, nmtcode::SpecError::NestedSymbol.into());
+    for (offset, &error) in errors.iter().enumerate() {
+        failure(&mut report, scan.found.len() + offset, count, error.into());
     }
 
     let mut stdout = std::io::stdout().lock();

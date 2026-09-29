@@ -1,0 +1,92 @@
+# cargo-deny 0.20 configuration: licences, banned and duplicate crates, sources and advisories.
+#
+#   cargo deny --locked check licenses bans sources   (offline)
+#   cargo deny --locked check advisories              (fetches the RustSec database)
+#
+# scripts/check.sh runs both.
+
+[graph]
+# Every target and every feature, so that a dependency behind a cfg() or an optional feature is
+# checked too. The release ships Linux, macOS, Windows and wasm32 builds.
+targets = []
+all-features = true
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+[licenses]
+# Licences allowed for every crate, including the direct dependencies of this workspace.
+# cargo-deny rejects every licence that is not listed here or in an exception below, so GPL, LGPL,
+# AGPL, SSPL, BUSL, MPL and every other licence are rejected. A crate that offers a choice
+# ("MIT OR LGPL-2.1-or-later") passes when one of its choices is allowed.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unlicense",
+    "CC0-1.0",
+]
+# The allow list is a policy, not an inventory: a licence no crate uses today is not a warning.
+unused-allowed-license = "allow"
+# An exception that no crate needs any more is a warning, so that it gets removed.
+unused-license-exception = "warn"
+confidence-threshold = 0.8
+# Development dependencies are not part of any artifact. Build dependencies are checked.
+include-dev = false
+include-build = true
+
+# Three more licences are accepted only for crates that come in transitively, and only for the crate
+# named in each exception. cargo-deny cannot tell a direct dependency from a transitive one, so each
+# such crate is named here; a new crate that needs one of these licences fails the check until it
+# gets its own line, after someone has confirmed that it is not a direct dependency.
+#
+# Zlib is BSD-like: it asks only that the notice stays in source copies and that altered versions
+# are marked.
+# Unicode-3.0 asks only that its notice is included with the data or software.
+# BSL-1.0 asks for no notice in binaries (only in source copies).
+exceptions = [
+    # Unicode-3.0: asks only for its notice. unicode-ident comes in through proc-macro2 and syn
+    # (the macros of wasm-bindgen); it is "(MIT OR Apache-2.0) AND Unicode-3.0".
+    { crate = "unicode-ident", allow = ["Unicode-3.0"] },
+    # Zlib: BSD-like. No crate of the graph needs it today (zlib-rs, an optional backend of flate2,
+    # is not enabled); add { crate = "<name>", allow = ["Zlib"] } when one does.
+    # BSL-1.0: asks for no notice in binaries. No crate of the graph needs it today; add
+    # { crate = "<name>", allow = ["BSL-1.0"] } when one does.
+]
+
+[licenses.private]
+# Workspace crates are checked like any other crate: the unpublished ones still ship in the web
+# bundle or build the release.
+ignore = false
+registries = []
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+# crates.io only: no other registry and no git dependency.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+# The RustSec advisory database. Every vulnerability and unsound advisory is an error, and so is an
+# unmaintained crate anywhere in the graph; an advisory that does not apply goes into `ignore` with
+# a reason.
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+unmaintained = "all"
+unsound = "all"
+ignore = []

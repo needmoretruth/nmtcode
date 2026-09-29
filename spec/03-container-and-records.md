@@ -219,7 +219,7 @@ The rules count records by their type ID, whether or not the value passes its ty
 
 ## 3.5 Colour symbols
 
-When X = 1, the content is split over two messages. This behaviour is provisional in 0.2.
+When X = 1, the content is split over two messages.
 
 - Base-layer message: the container of 3.2 with fields 7 and 8. Its records are the base records; it holds at least one (3.2.5). Every reader MUST present the base records, whether or not it reads colour.
 - Colour-layer message (the extension message): the container of 3.2 with X = 0, the same format echo byte as the base-layer message, and its own CRC-32C and padding. Its records are the extension records. Chapter 7 defines how the colour layer carries it and its message capacity.

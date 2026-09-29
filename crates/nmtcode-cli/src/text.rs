@@ -14,7 +14,7 @@ NMT Code: make a two-dimensional code as a PNG or SVG image, and read one back.
 
 Usage:
   nmtcode make [options]        make a symbol
-  nmtcode read [options] PATH   read the symbols in a PNG image
+  nmtcode read [options] PATH   read the symbols in a PNG or JPEG image
   nmtcode --help                show this help
   nmtcode --version             show the version
 
@@ -63,12 +63,14 @@ QR Code is a registered trademark of DENSO WAVE INCORPORATED.
 
 /// `nmtcode read --help`.
 pub const READ_HELP: &str = "\
-Read the NMT Code symbols in a PNG image.
+Read the NMT Code symbols in a PNG or JPEG image: a file made by nmtcode make, a screenshot or
+a camera photo.
 
 Usage: nmtcode read [options] PATH
 
-PATH is a PNG file, or - for standard input. Text and URLs are printed on standard output;
-URLs are never opened. Other data is printed in hexadecimal. Files are saved only with --out.
+PATH is a PNG or JPEG file, or - for standard input. Text and URLs are printed on standard
+output; URLs are never opened. Other data is printed in hexadecimal. Files are saved only with
+--out.
 
 Options:
   --out DIR            save files into DIR, which must exist; existing files are never
@@ -167,9 +169,9 @@ pub mod msg {
     /// `--qr` with `--no-qr`.
     pub const QR_AND_NO_QR: &str = "give only one of --qr and --no-qr";
     /// `read` without a path.
-    pub const READ_NEEDS_PATH: &str = "give the PNG file to read, or - for standard input";
+    pub const READ_NEEDS_PATH: &str = "give the PNG or JPEG file to read, or - for standard input";
     /// `read` with more than one path.
-    pub const READ_ONE_PATH: &str = "give only one PNG file";
+    pub const READ_ONE_PATH: &str = "give only one image file";
     /// No symbol in the image.
     pub const NOT_FOUND: &str = "no NMT Code symbol was found in the image";
 
@@ -360,6 +362,8 @@ pub fn detect_error(error: &nmtcode_detect::DetectError) -> String {
     use nmtcode_detect::DetectError;
     match error {
         DetectError::NotPng => "the input is not a PNG image".to_owned(),
+        DetectError::UnknownFormat => "the input is not a PNG or JPEG image".to_owned(),
+        DetectError::Jpeg(message) => format!("the JPEG image cannot be read: {message}"),
         DetectError::Malformed(message) => format!("the PNG image is damaged: {message}"),
         DetectError::Unsupported(message) => format!("the PNG image is not supported: {message}"),
         DetectError::TooLarge { width, height } => format!(

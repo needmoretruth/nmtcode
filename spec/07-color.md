@@ -195,8 +195,6 @@ Every module of data cell d(k) with luminance class d gets the colour of (d, t[k
 
 Every reader presents the same base records. A colour reader may present the extension records as well, shown apart from the base records and labelled as colour content that other readers may not show (chapter 3, 3.4.4 rule 5). No reader presents a record that another reader presents differently.
 
-This behaviour is provisional in 0.2.
-
 ### 7.9.2 Colour reader
 
 A colour reader follows these steps, in the order of chapter 3 (3.5). Steps 1 to 3 and 6 to 10 are normative. Steps 4 and 5 are RECOMMENDED; a reader MAY use another classifier, and every result is still subject to the checks of steps 6 to 9.

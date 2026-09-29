@@ -1,512 +1,791 @@
-//! From finders to symbols: grouping, size measurement, module sampling and the final check.
+//! One symbol candidate, from its finders to its module grid (specification 5.11 and 2.7).
+//!
+//! 1. The finder corners give a homography of the symbol in coordinates normalised to its
+//!    width and height, and the finders' own sizes in those coordinates give the finder
+//!    estimates Ŵ and Ĥ (5.11 step 4).
+//! 2. Copy A is read relative to TL and copy B relative to BR, when those finders were found
+//!    (2.7 step 1), and decoded with the size tolerance of 5.11 as part of step 3.
+//! 3. The chosen word's area is checked against the reader's largest area (2.7 step 5).
+//! 4. With W and H known, the homography is fitted to the exact module positions of every
+//!    finder corner, and a copy that did not decode is read again (5.11 step 3).
+//! 5. The reference marks refine the grid (5.6, 5.11 step 7).
+//! 6. W and H are confirmed against W ± 4 and H ± 4 on the module edges (5.11 step 4).
+//! 7. Every module is sampled and decided.
 
-use nmtcode_core::{MAX_SIDE, MIN_SIDE, ModuleGrid, is_valid_side};
+use nmtcode_core::{Error, FormatSample, FormatWord, decode_format_with};
+use nmtcode_symbol::{FORMAT_BITS, FORMAT_COPY_A, Layout, ModuleClass};
 
-use crate::finder::{self, BL, BR, Finder, TL, TR, Transform, corner, finder_module};
-use crate::num::{ceil_u32, count_f64, floor_i32, floor_u32, round_u8, u64_f64};
-use crate::{Detection, LumaImage};
+use crate::finder::{BL, BR, Finder, LOCAL, TL, TR, local_corner, outer_corner};
+use crate::geom::{Homography, Line, Point};
+use crate::group::Candidate;
+use crate::marks::{Mapping, mapping};
+use crate::num::count_f64;
+use crate::sample::sample;
+use crate::{DetectOptions, Found, LumaImage, Rejected};
 
-/// At most this many finder candidates are grouped; grouping is quadratic in their number.
-const MAX_FINDERS: usize = 2048;
-/// Two finders of one symbol have module sizes within this ratio.
-const MODULE_RATIO: f64 = 1.25;
-/// Largest mean distance, in modules, between the measured edges and the chosen module grid.
-const MAX_GRID_ERROR: f64 = 0.22;
-/// Lines scanned for edges when measuring a side.
-const MAX_SCAN_LINES: u32 = 64;
-/// Block of modules over which the local threshold is taken.
-const BLOCK: u32 = 8;
+/// Bits of a format copy with a confidence below this (0.5 is certain) may be erased.
+const FORMAT_ERASURE_MARGIN: f64 = 0.15;
 
-/// Otsu's threshold, returned as the midpoint of the mean dark and mean light values so that a
-/// two-level image splits halfway. `None` for an image without contrast.
-fn global_threshold(image: &LumaImage) -> Option<f64> {
-    let mut histogram = [0u64; 256];
-    for &v in &image.pixels {
-        if let Some(bin) = histogram.get_mut(usize::from(v)) {
-            *bin += 1;
-        }
-    }
-    let total: u64 = histogram.iter().sum();
-    let sum: f64 = (0u32..).zip(histogram.iter()).map(|(v, &n)| f64::from(v) * u64_f64(n)).sum();
-    let (mut w0, mut sum0, mut best, mut best_k) = (0u64, 0.0f64, -1.0f64, 0u32);
-    for (k, &n) in (0u32..).zip(histogram.iter()) {
-        w0 += n;
-        sum0 += f64::from(k) * u64_f64(n);
-        let w1 = total - w0;
-        if w0 == 0 || w1 == 0 {
-            continue;
-        }
-        let m0 = sum0 / u64_f64(w0);
-        let m1 = (sum - sum0) / u64_f64(w1);
-        let between = u64_f64(w0) * u64_f64(w1) * (m0 - m1) * (m0 - m1);
-        if between > best {
-            best = between;
-            best_k = k;
-        }
-    }
-    if best < 0.0 {
-        return None;
-    }
-    let (mut n0, mut s0, mut n1, mut s1) = (0u64, 0.0, 0u64, 0.0);
-    for (v, &n) in (0u32..).zip(histogram.iter()) {
-        if v <= best_k {
-            n0 += n;
-            s0 += f64::from(v) * u64_f64(n);
-        } else {
-            n1 += n;
-            s1 += f64::from(v) * u64_f64(n);
-        }
-    }
-    if n0 == 0 || n1 == 0 {
-        return None;
-    }
-    let dark = s0 / u64_f64(n0);
-    let light = s1 / u64_f64(n1);
-    (light - dark >= 20.0).then(|| f64::midpoint(dark, light))
+/// What reading one candidate gave.
+pub(crate) enum Outcome {
+    /// A symbol whose format word decoded and whose size was confirmed.
+    Found(Found, [Point; 4]),
+    /// A symbol that failed a check before any data module was read.
+    Rejected(Rejected),
+    /// Not a symbol after all: the finders do not make a plausible geometry.
+    Nothing,
 }
 
-/// A symbol found in the image: its grid in symbol orientation and its rectangle in the image,
-/// (left, top, right, bottom) in pixels.
-struct Found {
-    grid: ModuleGrid,
-    bounds: [f64; 4],
+/// Finder point `m` (0 = (0, 0), 1 = (5, 0), 2 = (5, 5), 3 = (0, 5)).
+fn finder_point(m: usize) -> Point {
+    LOCAL.get(m % 4).copied().unwrap_or_default()
 }
 
-/// Every symbol in `image`, dark on light (chapter 5, 5.11), and the number of nested ones.
-pub(crate) fn find(image: &LumaImage) -> Detection {
-    if !image.is_usable() {
-        return Detection::default();
-    }
-    let upright = find_upright(image);
-    if !upright.is_empty() {
-        return split_nested(upright, false);
-    }
-    // 1.4 and 5.11: a reader MAY try the inverted image. It is tried only when the image as
-    // captured holds no symbol, so a dark-on-light symbol costs no second pass.
-    let inverted = LumaImage {
-        width: image.width,
-        height: image.height,
-        pixels: image.pixels.iter().map(|&v| u8::MAX - v).collect(),
-    };
-    split_nested(find_upright(&inverted), true)
+/// The image point of finder corner `m` of a member.
+fn member_corner(f: &Finder, transform: usize, m: usize) -> Point {
+    f.corner(local_corner(transform, m))
 }
 
-/// The nesting rule of 5.11: a symbol whose rectangle lies inside another symbol's rectangle,
-/// and that other symbol, are both left out and counted.
-fn split_nested(found: Vec<Found>, inverted: bool) -> Detection {
-    let inside =
-        |a: &[f64; 4], b: &[f64; 4]| a[0] >= b[0] && a[1] >= b[1] && a[2] <= b[2] && a[3] <= b[3];
-    let mut nested = vec![false; found.len()];
-    for (i, a) in found.iter().enumerate() {
-        for (j, b) in found.iter().enumerate() {
-            if i != j && inside(&a.bounds, &b.bounds) {
-                if let Some(flag) = nested.get_mut(i) {
-                    *flag = true;
-                }
-                if let Some(flag) = nested.get_mut(j) {
-                    *flag = true;
+/// The members of a candidate with their finders.
+struct Members<'a> {
+    /// By kind: the finder and its transform.
+    at: [Option<(&'a Finder, usize)>; 4],
+    /// By kind: the outer corner the grouping predicted for a missing finder, used when the
+    /// finders next to it cannot place it (two finders of one edge).
+    predicted: [Option<Point>; 4],
+}
+
+impl Members<'_> {
+    fn present(&self, kind: usize) -> bool {
+        self.at.get(kind).is_some_and(Option::is_some)
+    }
+
+    /// Image point of finder corner `m` of the member of `kind`.
+    fn corner(&self, kind: usize, m: usize) -> Option<Point> {
+        let (f, t) = self.at.get(kind).copied().flatten()?;
+        Some(member_corner(f, t, m))
+    }
+
+    /// Every finder corner: (kind, finder corner m, image point).
+    fn all(&self) -> Vec<(usize, usize, Point)> {
+        let mut out = Vec::with_capacity(16);
+        for kind in 0..4 {
+            for m in 0..4 {
+                if let Some(p) = self.corner(kind, m) {
+                    out.push((kind, m, p));
                 }
             }
         }
+        out
     }
-    let count = nested.iter().filter(|&&n| n).count();
-    let symbols = found
-        .into_iter()
-        .zip(nested)
-        .filter_map(|(f, is_nested)| (!is_nested).then_some(f.grid))
-        .collect();
-    Detection { symbols, nested: count, inverted }
 }
 
-/// Every symbol in `image` as captured, dark modules darker than light ones.
-fn find_upright(image: &LumaImage) -> Vec<Found> {
-    let Some(threshold) = global_threshold(image) else {
-        return Vec::new();
+/// The outer corner of the symbol at `kind`: the finder's own corner, or, for a missing
+/// finder, the meeting point of the symbol's two outer edges there, each traced from the finder
+/// next to it along the boundary of the quiet zone (see [`trace`]), or, when a trace fails, the
+/// extension of that finder's outer side.
+fn outer(image: &LumaImage, members: &Members<'_>, kind: usize) -> Option<Point> {
+    if members.present(kind) {
+        return members.corner(kind, outer_corner(kind));
+    }
+    // (neighbour, its outer corner m, its corner m along the edge toward the missing corner)
+    let (vertical, horizontal) = match kind {
+        TL => ((BL, 3, 0), (TR, 1, 0)),
+        TR => ((BR, 2, 1), (TL, 0, 1)),
+        BL => ((TL, 0, 3), (BR, 2, 3)),
+        _ => ((TR, 1, 2), (BL, 3, 2)),
     };
-    let finders: Vec<Finder> = finder::regions(image, threshold)
-        .iter()
-        .filter_map(|region| finder::classify(image, region, threshold))
-        .take(MAX_FINDERS)
-        .collect();
-    let mut used = vec![false; finders.len()];
-    let mut out = Vec::new();
-    for k in 0..finders.len() {
-        if used.get(k).copied().unwrap_or(true) {
-            continue;
-        }
-        let Some(anchor) = finders.get(k) else { continue };
-        'transforms: for kind in [TL, TR, BL, BR] {
-            for t in Transform::ALL {
-                if !anchor.has(kind, t) {
-                    continue;
-                }
-                if let Some((found, members)) = try_symbol(image, &finders, &used, k, kind, t) {
-                    for m in members.into_iter().flatten() {
-                        if let Some(u) = used.get_mut(m) {
-                            *u = true;
-                        }
-                    }
-                    out.push(found);
-                    break 'transforms;
-                }
-            }
-        }
+    let edge = |(k, a, b): (usize, usize, usize)| -> Option<Line> {
+        let (f, _) = members.at.get(k).copied().flatten()?;
+        let (p0, p1) = (members.corner(k, a)?, members.corner(k, b)?);
+        trace(image, f, p0, p1).map(|(line, _)| line).or_else(|| Line::through(p0, p1))
+    };
+    match (edge(vertical), edge(horizontal)) {
+        (Some(v), Some(h)) => v.intersect(&h),
+        _ => members.predicted.get(kind).copied().flatten(),
     }
-    out
 }
 
-/// Direction of a search from one finder to its neighbour along a symbol edge.
-#[derive(Clone, Copy)]
-enum Direction {
-    Right,
-    Left,
-    Down,
-    Up,
-}
-
-fn similar_size(a: &Finder, b: &Finder) -> bool {
-    let ratio = a.module() / b.module();
-    (1.0 / MODULE_RATIO..=MODULE_RATIO).contains(&ratio)
-}
-
-/// The nearest unused finder of (`kind`, `t`) from `from` in `direction`, level with it (same
-/// top and bottom edges for a horizontal search, same left and right edges for a vertical one)
-/// and at least 15 modules away centre to centre, the least a 20-module side allows.
-fn nearest(
-    finders: &[Finder],
-    used: &[bool],
-    from: usize,
-    kind: usize,
-    t: Transform,
-    direction: Direction,
-) -> Option<usize> {
-    let a = finders.get(from)?;
-    let mut best: Option<(usize, f64)> = None;
-    for (j, b) in finders.iter().enumerate() {
-        if j == from
-            || used.get(j).copied().unwrap_or(true)
-            || !b.has(kind, t)
-            || !similar_size(a, b)
-        {
-            continue;
-        }
-        let m = a.module().min(b.module());
-        let tol = 0.6 * m;
-        let (level, gap) = match direction {
-            Direction::Right | Direction::Left => (
-                (b.top - a.top).abs() <= tol && (b.bottom - a.bottom).abs() <= tol,
-                if matches!(direction, Direction::Right) {
-                    b.left - a.left
-                } else {
-                    a.left - b.left
-                },
-            ),
-            Direction::Down | Direction::Up => (
-                (b.left - a.left).abs() <= tol && (b.right - a.right).abs() <= tol,
-                if matches!(direction, Direction::Down) { b.top - a.top } else { a.top - b.top },
-            ),
-        };
-        if !level || gap < 14.0 * m {
-            continue;
-        }
-        if best.is_none_or(|(_, g)| gap < g) {
-            best = Some((j, gap));
-        }
-    }
-    best.map(|(j, _)| j)
-}
-
-fn horizontal(c: (u8, u8)) -> Direction {
-    if c.0 == 0 { Direction::Right } else { Direction::Left }
-}
-
-fn vertical(c: (u8, u8)) -> Direction {
-    if c.1 == 0 { Direction::Down } else { Direction::Up }
-}
-
-/// Index of an image corner in a `[_; 4]`: x + 2y.
-fn slot(c: (u8, u8)) -> usize {
-    usize::from(c.0) + 2 * usize::from(c.1)
-}
-
-/// Tries to build a symbol with finder `k` as `kind` seen through transform `t`. Returns the
-/// symbol and the finders used, by image corner.
-fn try_symbol(
+/// The symbol's outer edge from a finder's outer corner `from` in the direction of that
+/// finder's corner `toward` along the edge: the boundary between the quiet zone and the
+/// outermost row or column of modules. Along the edge, every module, the outermost
+/// dark-to-light crossing within 2.5 modules inside and 2 outside is found; half the edge
+/// modules are dark, so the outermost crossings lie on the edge and the others inside it. The
+/// line is fitted to the outer envelope of the crossings, and returned with the point of the
+/// line level with the last crossing: where the edge ends, at the far corner. `None` with fewer
+/// than 8 crossings.
+pub(crate) fn trace(
     image: &LumaImage,
-    finders: &[Finder],
-    used: &[bool],
-    anchor: usize,
-    kind: usize,
-    transform: Transform,
-) -> Option<(Found, [Option<usize>; 4])> {
-    let at_anchor = transform.corner(corner(kind));
-    let at_side = (1 - at_anchor.0, at_anchor.1);
-    let at_end = (at_anchor.0, 1 - at_anchor.1);
-    let at_diagonal = (1 - at_anchor.0, 1 - at_anchor.1);
-    let across = horizontal(at_anchor);
-    let along = vertical(at_anchor);
-    let side = nearest(finders, used, anchor, transform.kind_at(at_side), transform, across);
-    let end = nearest(finders, used, anchor, transform.kind_at(at_end), transform, along);
-    let diagonal_kind = transform.kind_at(at_diagonal);
-    let diagonal = match (side, end) {
-        (Some(side), Some(end)) => nearest(finders, used, side, diagonal_kind, transform, along)
-            .filter(|&found| {
-                nearest(finders, used, end, diagonal_kind, transform, across) == Some(found)
-            }),
-        (Some(side), None) => nearest(finders, used, side, diagonal_kind, transform, along),
-        (None, Some(end)) => nearest(finders, used, end, diagonal_kind, transform, across),
-        (None, None) => None,
-    };
-    let mut corners = [None; 4];
-    for (c, found) in
-        [(at_anchor, Some(anchor)), (at_side, side), (at_end, end), (at_diagonal, diagonal)]
-    {
-        if let Some(s) = corners.get_mut(slot(c)) {
-            *s = found;
-        }
-    }
-    if corners.iter().flatten().count() < 3 {
+    finder: &Finder,
+    from: Point,
+    toward: Point,
+) -> Option<(Line, Point)> {
+    let along = toward.sub(from);
+    let len = along.norm();
+    if len < 1e-6 {
         return None;
     }
-    let found = measure_and_sample(image, finders, &corners, transform)?;
-    Some((found, corners))
+    let pitch = len / 5.0;
+    let mut dir = along.scale(1.0 / len);
+    let initial = dir;
+    // Outward: away from the finder's centre.
+    let side = Point::new(-dir.y, dir.x);
+    let outward = if side.dot(finder.centre().sub(from)) > 0.0 { -1.0 } else { 1.0 };
+    let threshold = finder.threshold();
+    let origin = from;
+    let mut points: Vec<Point> = Vec::new();
+    let mut last_hit = 0u32;
+    // At most 4108 modules along an edge.
+    for step in 6..4200u32 {
+        let normal = Point::new(-dir.y, dir.x).scale(outward);
+        let base = origin.add(dir.scale(f64::from(step) * pitch));
+        if base.x < -1.0
+            || base.y < -1.0
+            || base.x > f64::from(image.width) + 1.0
+            || base.y > f64::from(image.height) + 1.0
+        {
+            break;
+        }
+        let mut prev: Option<f64> = None;
+        let mut outermost: Option<f64> = None;
+        for i in 0..46 {
+            let d = -2.5 + 0.1 * f64::from(i);
+            let v = image.sample(base.add(normal.scale(d * pitch)));
+            if let Some(pv) = prev
+                && pv < threshold
+                && v >= threshold
+            {
+                outermost = Some(d - 0.1 + 0.1 * (threshold - pv) / (v - pv));
+            }
+            prev = Some(v);
+        }
+        if let Some(d) = outermost {
+            points.push(base.add(normal.scale(d * pitch)));
+            last_hit = step;
+            // Follow the edge: every 8 crossings from 16 on, the direction is fitted again
+            // through the finder's corner, within 3° of the finder's side, so a small error in
+            // that side's direction does not carry the search off a long edge.
+            if points.len() >= 16
+                && points.len().is_multiple_of(8)
+                && let Some(d) = pinned_direction(&points, from, dir, outward, pitch)
+                && d.dot(initial) > 3.0f64.to_radians().cos()
+            {
+                dir = d;
+            }
+        }
+        // Past the far corner the quiet zone gives no crossing: stop after 6 empty modules.
+        if points.len() >= 8 && step > last_hit + 6 {
+            break;
+        }
+    }
+    if points.len() < 8 {
+        return None;
+    }
+    let line = envelope(&points, dir, outward, pitch)?;
+    let far = points
+        .iter()
+        .copied()
+        .max_by(|a, b| a.sub(from).dot(dir).total_cmp(&b.sub(from).dot(dir)))?;
+    let end = line.point.add(line.dir.scale(line.along(far)));
+    Some((line, end))
 }
 
-fn mean(values: impl Iterator<Item = f64>) -> Option<f64> {
-    let (sum, n) = values.fold((0.0, 0usize), |(s, n), v| (s + v, n + 1));
-    (n > 0).then(|| sum / count_f64(n))
+/// The direction of the line through `from` along the outer envelope of `points` (see
+/// [`envelope`]), oriented like `dir`.
+fn pinned_direction(
+    points: &[Point],
+    from: Point,
+    dir: Point,
+    outward: f64,
+    pitch: f64,
+) -> Option<Point> {
+    let mut d = dir;
+    for _ in 0..4 {
+        let left = Point::new(-d.y, d.x);
+        let kept: Vec<Point> = points
+            .iter()
+            .map(|p| p.sub(from))
+            .filter(|v| left.dot(*v) * outward >= -0.4 * pitch)
+            .collect();
+        if kept.len() < 8 {
+            return None;
+        }
+        // Principal direction of the vectors from `from`, not centred.
+        let (mut sxx, mut sxy, mut syy) = (0.0, 0.0, 0.0);
+        for v in &kept {
+            sxx += v.x * v.x;
+            sxy += v.x * v.y;
+            syy += v.y * v.y;
+        }
+        let angle = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+        let next = Point::new(angle.cos(), angle.sin());
+        d = if next.dot(dir) < 0.0 { next.scale(-1.0) } else { next };
+    }
+    d.is_finite().then_some(d)
 }
 
-/// The size tolerance of 5.11: a side of `n` modules agrees with the finder estimate `estimate`
-/// when they differ by at most max(4, n / 10) modules.
+/// The line along the outer envelope of edge crossings: fit, keep the crossings within 0.4
+/// module inside the line, refit. Outward is the left of `dir` times `outward`.
+fn envelope(points: &[Point], dir: Point, outward: f64, pitch: f64) -> Option<Line> {
+    let mut line = Line::fit(points)?;
+    for _ in 0..5 {
+        let flip = if line.dir.dot(dir) < 0.0 { -1.0 } else { 1.0 };
+        let out = |p: &Point| line.distance(*p) * flip * outward;
+        let kept: Vec<Point> = points.iter().copied().filter(|p| out(p) >= -0.4 * pitch).collect();
+        if kept.len() < 8 {
+            break;
+        }
+        line = Line::fit(&kept)?;
+    }
+    Some(line)
+}
+
+/// Normalised coordinates of finder corner `m` of `kind` with finder fractions `a` = 5 / W and
+/// `b` = 5 / H.
+fn normalised(kind: usize, m: usize, a: f64, b: f64) -> Point {
+    let p = finder_point(m);
+    let (ox, oy) = match kind {
+        TL => (0.0, 0.0),
+        TR => (1.0 - a, 0.0),
+        BL => (0.0, 1.0 - b),
+        _ => (1.0 - a, 1.0 - b),
+    };
+    Point::new(ox + p.x * a / 5.0, oy + p.y * b / 5.0)
+}
+
+/// Module coordinates of finder corner `m` of `kind` in a `w` × `h` symbol.
+fn module_point(kind: usize, m: usize, w: f64, h: f64) -> Point {
+    let p = finder_point(m);
+    let (ox, oy) = match kind {
+        TL => (0.0, 0.0),
+        TR => (w - 5.0, 0.0),
+        BL => (0.0, h - 5.0),
+        _ => (w - 5.0, h - 5.0),
+    };
+    Point::new(ox + p.x, oy + p.y)
+}
+
+/// The finder estimates: the homography of normalised coordinates and (a, b) = (5 / Ŵ, 5 / Ĥ).
+fn estimate(image: &LumaImage, members: &Members<'_>) -> Option<(Homography, f64, f64)> {
+    let corners = [
+        outer(image, members, TL)?,
+        outer(image, members, TR)?,
+        outer(image, members, BR)?,
+        outer(image, members, BL)?,
+    ];
+    let unit =
+        [Point::new(0.0, 0.0), Point::new(1.0, 0.0), Point::new(1.0, 1.0), Point::new(0.0, 1.0)];
+    let mut g = Homography::fit(&unit, &corners)?;
+    let all = members.all();
+    // The outer corner of a missing finder, where the outer sides of its neighbours meet,
+    // holds the far end of the fit in place.
+    let missing: Vec<(Point, Point)> = (0..4)
+        .filter(|&k| !members.present(k))
+        .filter_map(|k| {
+            Some((
+                unit.get([0usize, 1, 3, 2].get(k).copied()?).copied()?,
+                corners.get([0usize, 1, 3, 2].get(k).copied()?).copied()?,
+            ))
+        })
+        .collect();
+    let mut dst: Vec<Point> = all.iter().map(|&(_, _, p)| p).collect();
+    dst.extend(missing.iter().map(|&(_, p)| p));
+    let (mut a, mut b) = fractions(&g, members)?;
+    for _ in 0..4 {
+        let mut src: Vec<Point> = all.iter().map(|&(k, m, _)| normalised(k, m, a, b)).collect();
+        src.extend(missing.iter().map(|&(u, _)| u));
+        g = Homography::fit(&src, &dst)?;
+        (a, b) = fractions(&g, members)?;
+    }
+    Some((g, a, b))
+}
+
+/// The mean width and height of the member finders in the normalised coordinates of `g`.
+fn fractions(g: &Homography, members: &Members<'_>) -> Option<(f64, f64)> {
+    let inv = g.inverse()?;
+    let (mut sa, mut sb, mut n) = (0.0, 0.0, 0usize);
+    for kind in 0..4 {
+        if !members.present(kind) {
+            continue;
+        }
+        let q = |m: usize| members.corner(kind, m).map(|p| inv.apply(p));
+        let (q0, q1, q2, q3) = (q(0)?, q(1)?, q(2)?, q(3)?);
+        sa += f64::midpoint((q1.x - q0.x).abs(), (q2.x - q3.x).abs());
+        sb += f64::midpoint((q3.y - q0.y).abs(), (q2.y - q1.y).abs());
+        n += 1;
+    }
+    let (a, b) = (sa / count_f64(n.max(1)), sb / count_f64(n.max(1)));
+    (a > 1e-4 && b > 1e-4 && a < 0.5 && b < 0.5).then_some((a, b))
+}
+
+/// The size tolerance of 5.11: a side of `n` modules agrees with the finder estimate
+/// `estimate` when they differ by at most max(4, n / 10) modules.
 pub(crate) fn within_tolerance(n: u32, estimate: f64) -> bool {
     let n = f64::from(n);
     (n - estimate).abs() <= (n / 10.0).max(4.0)
 }
 
-/// Chooses the number of modules along one side: among the multiples of 4 from 20 to 4108
-/// that agree with the finder estimate `(hi − lo) / module` within the tolerance of 5.11
-/// ([`within_tolerance`]), the one whose grid lines lie closest, on average, to the
-/// `threshold` crossings found along up to 64 scan lines spread between `cross_lo` and
-/// `cross_hi`. `value(line, p)` reads pixel `p` of scan line `line`; `lo` and `hi` are the
-/// symbol's outer edges along the side. `None` when no candidate fits within
-/// [`MAX_GRID_ERROR`].
-fn count_modules(
-    value: impl Fn(i32, i32) -> f64,
-    lo: f64,
-    hi: f64,
-    cross_lo: f64,
-    cross_hi: f64,
-    module: f64,
-    threshold: f64,
-) -> Option<u32> {
-    let span = hi - lo;
-    if span <= 0.0 || module <= 0.0 {
-        return None;
-    }
-    let rough = span / module;
-    // Every n within the tolerance lies between rough / 1.1 − 4 and rough / 0.9 + 4.
-    let first = ceil_u32(rough / 1.1 - 4.0).max(MIN_SIDE).next_multiple_of(4);
-    let last = floor_u32(rough / 0.9 + 4.0).min(MAX_SIDE);
-    if first > last {
-        return None;
-    }
-    let cross_modules = (cross_hi - cross_lo) / module;
-    let lines = floor_u32(cross_modules).clamp(8, MAX_SCAN_LINES);
-    let mut positions = Vec::new();
-    let p0 = floor_i32(lo - 0.5 * module);
-    let p1 = floor_i32(hi + 0.5 * module);
-    for i in 0..lines {
-        let c = cross_lo + (f64::from(i) + 0.5) * (cross_hi - cross_lo) / f64::from(lines);
-        let line = floor_i32(c);
-        let mut prev = value(line, p0);
-        let mut p = p0;
-        while p < p1 {
-            let q = p.saturating_add(1);
-            let next = value(line, q);
-            if (prev < threshold) != (next < threshold) && (next - prev).abs() > f64::EPSILON {
-                let x = f64::from(p) + 0.5 + (threshold - prev) / (next - prev);
-                positions.push((x - lo) / span);
-            }
-            prev = next;
-            p = q;
-        }
-    }
-    if positions.is_empty() {
-        return None;
-    }
-    let mut best: Option<(u32, f64)> = None;
-    for n in (first..=last).step_by(4).filter(|&n| within_tolerance(n, rough)) {
-        let nf = f64::from(n);
-        let error: f64 = positions
-            .iter()
-            .map(|&u| {
-                let g = u * nf;
-                (g - g.round()).abs()
+/// Reference cells per copy, times c² (chapter 7, 7.5).
+const REFERENCE_MODULES_PER_COPY: usize = 32;
+/// The least number of colour codewords of a colour-profile-1 symbol (chapter 7, 7.8.2).
+const COLOUR_MIN_CODEWORDS: usize = 16;
+
+/// The number of colour codewords of `layout` with chroma cells of `c` × `c` modules (7.5,
+/// 7.8.2): the cells aligned to multiples of c whose modules are all data modules, less the two
+/// reference copies, in whole bytes. The same count as the decoder of the `nmtcode` crate.
+fn colour_codewords(layout: &Layout, c: u32) -> usize {
+    let c = c.max(1);
+    let cells = (0..layout.height() / c)
+        .flat_map(|j| (0..layout.width() / c).map(move |i| (i, j)))
+        .filter(|&(i, j)| {
+            (0..c).all(|dy| {
+                (0..c).all(|dx| {
+                    layout.module_class(c * i + dx, c * j + dy) == Some(ModuleClass::Data)
+                })
             })
-            .sum::<f64>()
-            / count_f64(positions.len());
-        if best.is_none_or(|(_, e)| error < e) {
-            best = Some((n, error));
-        }
-    }
-    best.filter(|&(_, e)| e <= MAX_GRID_ERROR).map(|(n, _)| n)
+        })
+        .count();
+    let side = usize::try_from(c).unwrap_or(usize::MAX);
+    let reference = 2 * (REFERENCE_MODULES_PER_COPY / (side * side).max(1));
+    cells.saturating_sub(reference) / 8
 }
 
-/// Measures the symbol framed by `corners` (image corners, x + 2y), samples every module and
-/// checks the finders in the sampled grid.
-fn measure_and_sample(
+/// Step 3 of 2.7 for a word with valid fields: W and H agree with the finder estimates within
+/// the tolerance of 5.11, and a colour-profile-1 word leaves at least 16 colour codewords.
+fn plausible(word: &FormatWord, w_est: f64, h_est: f64, max_area: u64) -> bool {
+    if !within_tolerance(word.width(), w_est) || !within_tolerance(word.height(), h_est) {
+        return false;
+    }
+    if word.colour_profile() == 0 {
+        return true;
+    }
+    // A colour word above the largest area is left for step 5 to reject; its layout is not built.
+    if u64::from(word.width()) * u64::from(word.height()) > max_area {
+        return true;
+    }
+    Layout::new(word.width(), word.height()).is_ok_and(|layout| {
+        colour_codewords(&layout, word.chroma_cell_side()) >= COLOUR_MIN_CODEWORDS
+    })
+}
+
+/// Modules on a side of the patch read around a finder for its format copy: the copy lies
+/// within 10 modules of the corner, and two more give its outer modules their neighbours.
+const PATCH: usize = 12;
+
+/// One copy read at the symbol corner of `kind` (TL for copy A, BR for copy B): the raw word
+/// and the same word with its least certain bits (at most 4) erased. The corner's modules are
+/// decided with the equaliser of the module sampling, the finder, separator and quiet zone
+/// entering with their known values; blur of half a module otherwise flips format bits whose
+/// neighbours are all of the other colour. `at(u, v)` maps symbol coordinates to the image.
+fn read_copy(
     image: &LumaImage,
-    finders: &[Finder],
-    corners: &[Option<usize>; 4],
-    t: Transform,
-) -> Option<Found> {
-    let at = |s: usize| corners.get(s).copied().flatten().and_then(|i| finders.get(i));
-    let present = || corners.iter().flatten().filter_map(|&i| finders.get(i));
-    let left = mean([at(0), at(2)].into_iter().flatten().map(|f| f.left))?;
-    let right = mean([at(1), at(3)].into_iter().flatten().map(|f| f.right))?;
-    let top = mean([at(0), at(1)].into_iter().flatten().map(|f| f.top))?;
-    let bottom = mean([at(2), at(3)].into_iter().flatten().map(|f| f.bottom))?;
-    let module_x = mean(present().map(Finder::module_x))?;
-    let module_y = mean(present().map(Finder::module_y))?;
-    let threshold = mean(present().map(|f| f.threshold))?;
-    let contrast = mean(present().map(|f| f.contrast))?;
-
-    let columns = count_modules(
-        |row, x| f64::from(image.at(x, row)),
-        left,
-        right,
-        top,
-        bottom,
-        module_x,
-        threshold,
-    )?;
-    let rows = count_modules(
-        |col, y| f64::from(image.at(col, y)),
-        top,
-        bottom,
-        left,
-        right,
-        module_y,
-        threshold,
-    )?;
-
-    // Module centres in image orientation.
-    let pitch_x = (right - left) / f64::from(columns);
-    let pitch_y = (bottom - top) / f64::from(rows);
-    let wi = usize::try_from(columns).ok()?;
-    let hi = usize::try_from(rows).ok()?;
-    let mut samples = vec![0u8; wi * hi];
-    for (yi, row) in (0u32..).zip(samples.chunks_mut(wi)) {
-        let y = top + (f64::from(yi) + 0.5) * pitch_y;
-        for (xi, s) in (0u32..).zip(row.iter_mut()) {
-            let x = left + (f64::from(xi) + 0.5) * pitch_x;
-            *s = round_u8(image.bilinear(x, y));
+    at: &dyn Fn(f64, f64) -> Point,
+    kind: usize,
+    w: f64,
+    h: f64,
+) -> (FormatSample, FormatSample) {
+    let corner = if kind == TL {
+        nmtcode_symbol::Corner::TopLeft
+    } else {
+        nmtcode_symbol::Corner::BottomRight
+    };
+    let finder = |x: u32, y: u32| {
+        let (fx, fy) = if kind == TL { (x, y) } else { (4 - x.min(4), 4 - y.min(4)) };
+        corner.module(fx, fy) == Some(true)
+    };
+    // Corner coordinates: copy B is copy A turned by 180° about the symbol's centre (5.5).
+    let local = |u: f64, v: f64| if kind == TL { at(u, v) } else { at(w - u, h - v) };
+    let patch = crate::sample::corner_patch(image, &local, &finder, PATCH);
+    let mut bits = 0u64;
+    let mut margins: Vec<(f64, usize)> = Vec::with_capacity(FORMAT_BITS);
+    for (i, &(x, y)) in FORMAT_COPY_A.iter().enumerate() {
+        let index = usize::try_from(y).unwrap_or(0) * PATCH + usize::try_from(x).unwrap_or(0);
+        let (dark, margin) = patch.get(index).copied().unwrap_or((false, 0.0));
+        bits |= u64::from(dark) << (FORMAT_BITS - 1 - i);
+        margins.push((margin, i));
+    }
+    margins.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let mut erasures = 0u64;
+    for &(m, i) in margins.iter().take(4) {
+        if m < FORMAT_ERASURE_MARGIN {
+            erasures |= 1u64 << (FORMAT_BITS - 1 - i);
         }
     }
+    (FormatSample::new(bits), FormatSample::with_erasures(bits, erasures))
+}
 
-    // Local threshold: midpoint of the darkest and lightest centres in the 3 × 3 blocks of
-    // 8 × 8 modules around each module; the finders' threshold where that range is flat.
-    let bw = columns.div_ceil(BLOCK);
-    let bh = rows.div_ceil(BLOCK);
-    let bwu = usize::try_from(bw).ok()?;
-    let mut lows = vec![u8::MAX; bwu * usize::try_from(bh).ok()?];
-    let mut highs = vec![0u8; lows.len()];
-    for (yi, row) in (0u32..).zip(samples.chunks(wi)) {
-        for (xi, &s) in (0u32..).zip(row.iter()) {
-            let b = usize::try_from((yi / BLOCK) * bw + xi / BLOCK).ok()?;
-            if let (Some(lo), Some(hi)) = (lows.get_mut(b), highs.get_mut(b)) {
-                *lo = (*lo).min(s);
-                *hi = (*hi).max(s);
+/// Samples of both copies (`None` where the finder was not found) of a `w` × `h` symbol under
+/// the map `at` of symbol coordinates.
+fn read_copies(
+    image: &LumaImage,
+    members: &Members<'_>,
+    at: &dyn Fn(f64, f64) -> Point,
+    w: f64,
+    h: f64,
+) -> [Option<(FormatSample, FormatSample)>; 2] {
+    let a = members.present(TL).then(|| read_copy(image, at, TL, w, h));
+    let b = members.present(BR).then(|| read_copy(image, at, BR, w, h));
+    [a, b]
+}
+
+/// Decodes the format word from `copies`, first without erasures and, when no copy decodes,
+/// with them. Returns the result and which copies were given.
+fn decode(
+    copies: &[Option<(FormatSample, FormatSample)>; 2],
+    accept: &dyn Fn(&FormatWord) -> bool,
+) -> Result<nmtcode_core::FormatDecoded, Error> {
+    let plain = copies.map(|c| c.map(|(p, _)| p));
+    let first = decode_format_with(plain, accept);
+    match first {
+        Err(Error::FormatUnreadable) => {
+            let erased = copies.map(|c| c.map(|(_, e)| e));
+            if erased == plain {
+                return first;
             }
+            decode_format_with(erased, accept)
+        }
+        other => other,
+    }
+}
+
+/// Contrast across the module edges less contrast across the module centres of a grid of `n`
+/// modules along `at(t, c)`, t from 0 to 1 along the grid and c from 0 to 1 across it, on
+/// `lines` lines, between the finders (modules 5 to n − 6). The image changes across a true
+/// module edge half the time and never across a true centre, so the true grid scores highest.
+fn edge_score(
+    image: &LumaImage,
+    at: &dyn Fn(f64, f64) -> Point,
+    n: u32,
+    lines: u32,
+    band: (f64, f64),
+) -> f64 {
+    let nf = f64::from(n);
+    let delta = 0.3 / nf;
+    let (mut sum, mut count) = (0.0, 0usize);
+    for li in 0..lines {
+        let c = band.0 + (band.1 - band.0) * (f64::from(li) + 0.5) / f64::from(lines);
+        let v = |t: f64| image.sample(at(t, c));
+        for i in 5..n.saturating_sub(5) {
+            let edge = f64::from(i) / nf;
+            let centre = (f64::from(i) + 0.5) / nf;
+            sum += (v(edge + delta) - v(edge - delta)).abs();
+            sum -= (v(centre + delta) - v(centre - delta)).abs();
+            count += 1;
         }
     }
-    let block_threshold = |bx: u32, by: u32| -> f64 {
-        let (mut lo, mut hi) = (u8::MAX, 0u8);
-        for ny in by.saturating_sub(1)..=(by + 1).min(bh - 1) {
-            for nx in bx.saturating_sub(1)..=(bx + 1).min(bw - 1) {
-                let b = usize::try_from(ny * bw + nx).unwrap_or(usize::MAX);
-                if let (Some(&l), Some(&h)) = (lows.get(b), highs.get(b)) {
-                    lo = lo.min(l);
-                    hi = hi.max(h);
+    if count == 0 { 0.0 } else { sum / count_f64(count) }
+}
+
+/// Confirms `w` against `w − 4` and `w + 4` (`horizontal`) or `h` against `h ± 4` on the fitted
+/// grid: the claimed size must have the higher [`edge_score`] on the module edges between the
+/// two finders of each side whose finders were found, in the 12 modules along that side
+/// (5.11 step 4, exact size).
+fn confirm(
+    image: &LumaImage,
+    map: &Mapping,
+    w: u32,
+    h: u32,
+    horizontal: bool,
+    present: [bool; 4],
+) -> bool {
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let at =
+        |t: f64, c: f64| if horizontal { map.map(t * wf, c * hf) } else { map.map(c * wf, t * hf) };
+    let (along, across) = if horizontal { (w, h) } else { (h, w) };
+    let depth = (12.0 / f64::from(across)).min(0.5);
+    // The two sides of this direction and their finders: top (TL, TR) and bottom (BL, BR) for
+    // widths, left (TL, BL) and right (TR, BR) for heights.
+    let pairs = if horizontal { [(TL, TR), (BL, BR)] } else { [(TL, BL), (TR, BR)] };
+    let found = |k: usize| present.get(k).copied().unwrap_or(false);
+    let bands: Vec<(f64, f64)> = pairs
+        .iter()
+        .zip([(0.0, depth), (1.0 - depth, 1.0)])
+        .filter(|&(&(a, b), _)| found(a) && found(b))
+        .map(|(_, band)| band)
+        .collect();
+    if bands.is_empty() {
+        return false;
+    }
+    let lines = across.min(12);
+    let score =
+        |n: u32| bands.iter().map(|&band| edge_score(image, &at, n, lines, band)).sum::<f64>();
+    let own = score(along);
+    own > score(along + 4) && own > score(along.saturating_sub(4).max(11))
+}
+
+/// The valid sides within the 5.11 tolerance of `estimate`, best first by [`edge_score`] on the
+/// normalised map `g` (`horizontal` for widths), on `bands` across the symbol: the strips along
+/// the edges whose two finders were found, where `g` is surest.
+fn ranked_sides(
+    image: &LumaImage,
+    g: &Homography,
+    estimate: f64,
+    horizontal: bool,
+    bands: &[(f64, f64)],
+) -> Vec<u32> {
+    let lo = ((estimate / 1.1 - 4.0).max(20.0) / 4.0).floor();
+    let hi = (estimate / 0.9 + 4.0).min(4108.0) / 4.0;
+    let mut sides: Vec<(u32, f64)> = Vec::new();
+    let mut n4 = lo;
+    while n4 <= hi {
+        let n = crate::num::floor_u32(n4) * 4;
+        n4 += 1.0;
+        if !nmtcode_core::is_valid_side(n) || !within_tolerance(n, estimate) {
+            continue;
+        }
+        let at = |t: f64, c: f64| {
+            if horizontal { g.apply(Point::new(t, c)) } else { g.apply(Point::new(c, t)) }
+        };
+        let score: f64 = bands.iter().map(|&band| edge_score(image, &at, n, 8, band)).sum();
+        sides.push((n, score));
+    }
+    sides.sort_by(|a, b| b.1.total_cmp(&a.1));
+    sides.into_iter().map(|(n, _)| n).collect()
+}
+
+/// The homography of module coordinates of a `w` × `h` symbol from every finder corner.
+fn exact(image: &LumaImage, members: &Members<'_>, w: u32, h: u32) -> Option<Homography> {
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let all = members.all();
+    let mut src: Vec<Point> = all.iter().map(|&(k, m, _)| module_point(k, m, wf, hf)).collect();
+    let mut dst: Vec<Point> = all.iter().map(|&(_, _, p)| p).collect();
+    for kind in (0..4).filter(|&k| !members.present(k)) {
+        if let Some(p) = outer(image, members, kind) {
+            src.push(module_point(kind, outer_corner(kind), wf, hf));
+            dst.push(p);
+        }
+    }
+    Homography::fit(&src, &dst)
+}
+
+/// The transform of a finder found at `predicted` (finder corners m = 0 to 3 in order): each
+/// predicted corner goes to the nearest corner of the finder.
+fn transform_of(f: &Finder, predicted: &[Point; 4]) -> Option<(usize, i32)> {
+    let nearest =
+        |p: Point| (0..4).min_by(|&a, &b| f.corner(a).dist(p).total_cmp(&f.corner(b).dist(p)));
+    let j: Vec<usize> = predicted.iter().filter_map(|&p| nearest(p)).collect();
+    let (&j0, &j1, &j3) = (j.first()?, j.get(1)?, j.get(3)?);
+    let sigma = if j1 == (j0 + 1) % 4 && j3 == (j0 + 3) % 4 {
+        1
+    } else if j1 == (j0 + 3) % 4 && j3 == (j0 + 1) % 4 {
+        -1
+    } else {
+        return None;
+    };
+    Some((crate::finder::transform(j0, sigma), sigma))
+}
+
+/// The members of a candidate, owned: by kind, the finder and its transform.
+type Owned = [Option<(Finder, usize)>; 4];
+
+/// The missing finders of `owned` searched where `predict(kind, m)` puts their corners
+/// m = 0 to 3; a finder found there counts when its orientation is the candidate's (`sigma`),
+/// its pattern is the kind's and its outer corner faces the quiet zone.
+fn search_missing(
+    image: &LumaImage,
+    noise: f64,
+    owned: &mut Owned,
+    sigma: i32,
+    predict: &dyn Fn(usize, usize) -> Point,
+) {
+    for kind in 0..4 {
+        if owned.get(kind).is_some_and(Option::is_some) {
+            continue;
+        }
+        let predicted = [0usize, 1, 2, 3].map(|m| predict(kind, m));
+        let Some(f) = crate::finder::guided(image, noise, &predicted) else { continue };
+        let Some((t, s)) = transform_of(&f, &predicted) else { continue };
+        let score = f.ssd.get(kind).and_then(|row| row.get(t)).copied().unwrap_or(f64::INFINITY);
+        if s == sigma
+            && score <= crate::group::SSD_ASSIGN
+            && f.quiet_corner(local_corner(t, outer_corner(kind)))
+            && let Some(slot) = owned.get_mut(kind)
+        {
+            *slot = Some((f, t));
+        }
+    }
+}
+
+/// A borrowed view of `owned`.
+fn view(owned: &Owned, predicted: [Option<Point>; 4]) -> Members<'_> {
+    Members { at: owned.each_ref().map(|o| o.as_ref().map(|(f, t)| (f, *t))), predicted }
+}
+
+/// The bands along the edges whose two finders were found: for widths the top (TL, TR) and
+/// bottom (BL, BR) strips of `depth`, for heights the left (TL, BL) and right (TR, BR) ones.
+fn edge_bands(members: &Members<'_>, horizontal: bool, depth: f64) -> Vec<(f64, f64)> {
+    let pairs = if horizontal { [(TL, TR), (BL, BR)] } else { [(TL, BL), (TR, BR)] };
+    let depth = depth.min(0.5);
+    pairs
+        .iter()
+        .zip([(0.0, depth), (1.0 - depth, 1.0)])
+        .filter(|&(&(a, b), _)| members.present(a) && members.present(b))
+        .map(|(_, band)| band)
+        .collect()
+}
+
+/// Reads candidate `candidate` of `finders`.
+// The steps of 5.11 and 2.7 in their order, in one place.
+#[allow(clippy::too_many_lines)]
+pub(crate) fn read(
+    image: &LumaImage,
+    noise: f64,
+    finders: &[Finder],
+    candidate: &Candidate,
+    options: &DetectOptions,
+) -> Outcome {
+    let predicted: [Option<Point>; 4] = [0usize, 1, 2, 3].map(|k| {
+        let missing = candidate.members.get(k).is_some_and(Option::is_none);
+        missing.then(|| candidate.outer.get(k).copied()).flatten()
+    });
+    let mut owned: Owned = [None, None, None, None];
+    for (slot, member) in owned.iter_mut().zip(candidate.members.iter()) {
+        if let Some(m) = member {
+            *slot = finders.get(m.finder).map(|f| (f.clone(), m.transform));
+        }
+    }
+    // A finder that the threshold missed is searched where the others put it.
+    if owned.iter().flatten().count() < 4 {
+        let Some((g_norm, a, b)) = estimate(image, &view(&owned, predicted)) else {
+            return Outcome::Nothing;
+        };
+        search_missing(image, noise, &mut owned, candidate.sigma, &|kind, m| {
+            g_norm.apply(normalised(kind, m, a, b))
+        });
+    }
+    // 5.11: three finders at least.
+    if owned.iter().flatten().count() < 3 {
+        return Outcome::Nothing;
+    }
+    let members = view(&owned, predicted);
+    let Some((g_norm, a, b)) = estimate(image, &members) else { return Outcome::Nothing };
+    let (w_est, h_est) = (5.0 / a, 5.0 / b);
+    if !(15.0..=4600.0).contains(&w_est) || !(15.0..=4600.0).contains(&h_est) {
+        return Outcome::Nothing;
+    }
+    // The area of 5.11 step 6: the outer corners of the finders, the fourth completing a
+    // parallelogram when missing.
+    let Some(area) = nesting_area(&members) else { return Outcome::Nothing };
+    let rejected = |error: Error| Outcome::Rejected(Rejected { corners: area, error });
+    let accept = |word: &FormatWord| plausible(word, w_est, h_est, options.max_area);
+    // 5.11 step 3: the pitch from one finder's size reaches the far format bits with about ten
+    // times its error, and blur moves the edges of the one-module ring. The sizes near the
+    // estimates are ranked on the module edges along the edges whose finders were found, and
+    // the copies read with the homography of every finder corner at the best sizes. The copies
+    // lie within 10 modules of their finders, so a size near the truth reads them; the word
+    // they give must pass the tolerance of 5.11 against the finder estimates.
+    let widths =
+        ranked_sides(image, &g_norm, w_est, true, &edge_bands(&members, true, 12.0 / h_est));
+    let heights =
+        ranked_sides(image, &g_norm, h_est, false, &edge_bands(&members, false, 12.0 / w_est));
+    let read_at = |members: &Members<'_>,
+                   w: u32,
+                   h: u32|
+     -> Option<[Option<(FormatSample, FormatSample)>; 2]> {
+        let g = exact(image, members, w, h)?;
+        let at = |u: f64, v: f64| g.apply(Point::new(u, v));
+        Some(read_copies(image, members, &at, f64::from(w), f64::from(h)))
+    };
+    let mut chosen: Option<FormatWord> = None;
+    let mut first_error: Option<Error> = None;
+    'hypotheses: for &w in widths.iter().take(3) {
+        for &h in heights.iter().take(3) {
+            let Some(copies) = read_at(&members, w, h) else { continue };
+            match decode(&copies, &accept) {
+                Ok(d) => {
+                    chosen = Some(d.word);
+                    break 'hypotheses;
+                }
+                Err(Error::FormatUnreadable) => {}
+                Err(e) => {
+                    first_error.get_or_insert(e);
                 }
             }
         }
-        if f64::from(hi) - f64::from(lo) >= 0.5 * contrast {
-            f64::midpoint(f64::from(lo), f64::from(hi))
-        } else {
-            threshold
-        }
+    }
+    let Some(word) = chosen else {
+        return rejected(first_error.unwrap_or(Error::FormatUnreadable));
     };
-    let mut thresholds = vec![threshold; lows.len()];
-    for by in 0..bh {
-        for bx in 0..bw {
-            if let Some(slot) =
-                usize::try_from(by * bw + bx).ok().and_then(|b| thresholds.get_mut(b))
-            {
-                *slot = block_threshold(bx, by);
-            }
+    // 2.7 step 5 and 5.11 step 5: the largest area, before any data module is read.
+    if u64::from(word.width()) * u64::from(word.height()) > options.max_area {
+        return rejected(Error::SizeLimit);
+    }
+    // With W and H known, a finder still missing is searched where the exact geometry puts
+    // it, and both copies are read again with that geometry (5.11 step 3). A reading that
+    // decodes to another word is a conflict; one that decodes nothing leaves the first word.
+    let (w, h) = (word.width(), word.height());
+    let (wf, hf) = (f64::from(w), f64::from(h));
+    let g_known = exact(image, &members, w, h);
+    if owned.iter().flatten().count() < 4
+        && let Some(g) = g_known
+    {
+        search_missing(image, noise, &mut owned, candidate.sigma, &|kind, m| {
+            g.apply(module_point(kind, m, wf, hf))
+        });
+    }
+    let members = view(&owned, predicted);
+    let exact_size = |word: &FormatWord| word.width() == w && word.height() == h && accept(word);
+    if let Some(copies) = read_at(&members, w, h) {
+        match decode(&copies, &exact_size) {
+            Ok(d) if d.word != word => return rejected(Error::FormatConflict),
+            Ok(_) | Err(Error::FormatUnreadable) => {}
+            Err(e) => return rejected(e),
         }
     }
-
-    // Back to the symbol's own orientation.
-    let (width, height) = if t.swaps() { (rows, columns) } else { (columns, rows) };
-    if !is_valid_side(width) || !is_valid_side(height) {
-        return None;
+    let Some(g) = exact(image, &members, w, h) else { return Outcome::Nothing };
+    let Ok(layout) = Layout::new(w, h) else { return rejected(Error::FormatUnreadable) };
+    let contrast = members
+        .at
+        .iter()
+        .flatten()
+        .map(|(f, _)| crate::light::stored(f.border) - crate::light::stored(f.ring))
+        .fold(f64::INFINITY, f64::min);
+    let present =
+        [members.present(TL), members.present(TR), members.present(BL), members.present(BR)];
+    // The reference marks refine the grid (5.6, 5.11 step 7); a mark misplaced under heavy
+    // blur can bend it instead, so the mesh is kept only when the module edges of the whole
+    // symbol fit it at least as well as the finders' homography alone.
+    let meshed = mapping(image, g, &layout, present, 0.3 * contrast);
+    let fit = |m: &Mapping| {
+        let at_x = |t: f64, c: f64| m.map(t * wf, c * hf);
+        let at_y = |t: f64, c: f64| m.map(c * wf, t * hf);
+        edge_score(image, &at_x, w, 16, (0.0, 1.0)) + edge_score(image, &at_y, h, 16, (0.0, 1.0))
+    };
+    let plain = Mapping::plain(g);
+    let map = if layout.reference_mark_count() > 0 && fit(&meshed) < fit(&plain) {
+        plain
+    } else {
+        meshed
+    };
+    // 5.11 step 4, exact size: after the grid is fitted and before any data module is read.
+    if !confirm(image, &map, w, h, true, present) || !confirm(image, &map, w, h, false, present) {
+        return rejected(Error::FormatUnreadable);
     }
-    let mut grid = ModuleGrid::new(width, height)?;
-    for v in 0..height {
-        for u in 0..width {
-            let (xi, yi) = t.apply(u, v, columns - 1, rows - 1);
-            let index = usize::try_from(u64::from(yi) * u64::from(columns) + u64::from(xi)).ok()?;
-            let b = usize::try_from((yi / BLOCK) * bw + xi / BLOCK).ok()?;
-            let (Some(&s), Some(&thr)) = (samples.get(index), thresholds.get(b)) else {
-                return None;
-            };
-            grid.set(u, v, f64::from(s) < thr);
-        }
-    }
-    (finders_intact(&grid) >= 3).then_some(Found { grid, bounds: [left, top, right, bottom] })
+    let Some(sampled) = sample(image, &map, &layout) else { return Outcome::Nothing };
+    let corners = [map.map(0.0, 0.0), map.map(wf, 0.0), map.map(wf, hf), map.map(0.0, hf)];
+    let found = Found {
+        grid: sampled.grid,
+        uncertain: sampled.uncertain,
+        corners,
+        mirrored: candidate.sigma < 0,
+        inverted: false,
+        finders: u8::try_from(owned.iter().flatten().count()).unwrap_or(4),
+    };
+    Outcome::Found(found, area)
 }
 
-/// Number of the four finders (5.3) that, with their separators (5.4), are exact in `grid`.
-fn finders_intact(grid: &ModuleGrid) -> usize {
-    let (w, h) = (grid.width(), grid.height());
-    [TL, TR, BL, BR]
-        .into_iter()
-        .filter(|&kind| {
-            let (cx, cy) = corner(kind);
-            let fx = if cx == 0 { 0 } else { w - 5 };
-            let fy = if cy == 0 { 0 } else { h - 5 };
-            // Separator column and row on the sides facing the inside (5.4).
-            let sx = if cx == 0 { 5 } else { w - 6 };
-            let sy = if cy == 0 { 5 } else { h - 6 };
-            let finder_ok = (0u32..5).zip(0usize..).all(|(y, yu)| {
-                (0u32..5)
-                    .zip(0usize..)
-                    .all(|(x, xu)| grid.get(fx + x, fy + y) == Some(finder_module(kind, xu, yu)))
-            });
-            let span_y = if cy == 0 { 0..=5 } else { h - 6..=h - 1 };
-            let span_x = if cx == 0 { 0..=5 } else { w - 6..=w - 1 };
-            let separator_ok = span_y.clone().all(|y| grid.get(sx, y) == Some(false))
-                && span_x.clone().all(|x| grid.get(x, sy) == Some(false));
-            finder_ok && separator_ok
-        })
-        .count()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::within_tolerance;
-
-    #[test]
-    fn size_tolerance_of_5_11() {
-        // max(4, W / 10): 4 modules up to W = 40, then 10%.
-        assert!(within_tolerance(20, 24.0) && within_tolerance(20, 16.0));
-        assert!(!within_tolerance(20, 24.1) && !within_tolerance(20, 15.9));
-        assert!(within_tolerance(40, 44.0) && !within_tolerance(40, 44.1));
-        assert!(within_tolerance(100, 110.0) && !within_tolerance(100, 110.1));
-        assert!(within_tolerance(100, 90.0) && !within_tolerance(100, 89.9));
-        assert!(within_tolerance(4108, 3697.25) && !within_tolerance(4108, 3697.15));
-    }
+/// The area of 5.11 step 6 in the symbol's corner order TL, TR, BR, BL.
+fn nesting_area(members: &Members<'_>) -> Option<[Point; 4]> {
+    let corner =
+        |k: usize| if members.present(k) { members.corner(k, outer_corner(k)) } else { None };
+    let (tl, tr, bl, br) = (corner(TL), corner(TR), corner(BL), corner(BR));
+    let area = match (tl, tr, bl, br) {
+        (Some(tl), Some(tr), Some(bl), Some(br)) => [tl, tr, br, bl],
+        (None, Some(tr), Some(bl), Some(br)) => [tr.add(bl).sub(br), tr, br, bl],
+        (Some(tl), None, Some(bl), Some(br)) => [tl, tl.add(br).sub(bl), br, bl],
+        (Some(tl), Some(tr), None, Some(br)) => [tl, tr, br, tl.add(br).sub(tr)],
+        (Some(tl), Some(tr), Some(bl), None) => [tl, tr, tr.add(bl).sub(tl), bl],
+        _ => return None,
+    };
+    Some(area)
 }

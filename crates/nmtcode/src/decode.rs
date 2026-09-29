@@ -4,13 +4,16 @@
 use core::fmt;
 
 use nmtcode_core::{
-    CODEC_COUNT_V0, ContentType, DictionaryEntry, DictionaryKind, FormatSample, FormatWord,
-    MAX_SIDE, MAX_STATIC_CONTENT_LEN_V0, ModuleGrid, Outcome, PresentAs, ReaderConfig, RecordForm,
-    ValueNotice, decode_format_with, parse_message, parse_records, safe_file_name,
+    CODEC_COUNT_V0, ContentType, DictionaryEntry, DictionaryKind, FORMAT_MAX_ERASURES,
+    FormatSample, FormatWord, MAX_SIDE, MAX_STATIC_CONTENT_LEN_V0, ModuleGrid, Outcome, PresentAs,
+    ReaderConfig, RecordForm, ValueNotice, decode_format_with, parse_message, parse_records,
+    safe_file_name,
 };
 use nmtcode_ecc::EccError;
 use nmtcode_payload::CodecError;
-use nmtcode_symbol::{Layout, ModuleClass, read_format_copies};
+use nmtcode_symbol::{
+    FORMAT_BITS, FormatCopy, Layout, ModuleClass, format_module, read_format_copies,
+};
 
 use crate::SpecError;
 
@@ -253,11 +256,71 @@ fn decode_with(
     word: &FormatWord,
     config: &ReaderConfig<'_>,
 ) -> Result<Decoded, SpecError> {
+    decode_layer(grid, word, config, &[])
+}
+
+/// Every Reed-Solomon block of `stream` corrected (chapter 4, 4.9). `erasures[b]` lists the
+/// byte positions of block b that the reader marked as unreliable, most doubtful first; each
+/// block is tried with all its marks up to its parity count, then with the first half, then
+/// without, and keeps the first that corrects (4.9 permits several erasure sets per block).
+fn correct_blocks(
+    split: &nmtcode_ecc::BlockSplit,
+    stream: &[u8],
+    erasures: &[Vec<usize>],
+) -> Result<nmtcode_ecc::Decoded, SpecError> {
+    if erasures.iter().all(Vec::is_empty) {
+        return nmtcode_ecc::decode_stream(split, stream, &[]).map_err(ecc_error);
+    }
+    let mut message = Vec::with_capacity(split.capacity());
+    let mut corrected = 0usize;
+    for block in split.blocks() {
+        let received: Vec<u8> = stream
+            .iter()
+            .skip(block.index)
+            .step_by(split.block_count())
+            .take(block.len)
+            .copied()
+            .collect();
+        if received.len() != block.len {
+            return Err(SpecError::EccFailed);
+        }
+        let marks = erasures.get(block.index).map_or(&[][..], Vec::as_slice);
+        let full = marks.get(..marks.len().min(block.parity_len)).unwrap_or(&[]);
+        let half = full.get(..full.len() / 2).unwrap_or(&[]);
+        let mut attempts: Vec<&[usize]> = vec![full];
+        if !half.is_empty() && half.len() < full.len() {
+            attempts.push(half);
+        }
+        if !full.is_empty() {
+            attempts.push(&[]);
+        }
+        let (codeword, changed) = attempts
+            .iter()
+            .find_map(|&attempt| {
+                let mut codeword = received.clone();
+                nmtcode_ecc::rs::decode(&mut codeword, block.parity_len, attempt)
+                    .ok()
+                    .map(|changed| (codeword, changed))
+            })
+            .ok_or(SpecError::EccFailed)?;
+        corrected += changed;
+        message.extend_from_slice(codeword.get(..block.message_len).ok_or(SpecError::EccFailed)?);
+    }
+    Ok(nmtcode_ecc::Decoded { message, corrected })
+}
+
+/// [`decode_with`] with `erasures` per block for the Reed-Solomon step.
+fn decode_layer(
+    grid: &ModuleGrid,
+    word: &FormatWord,
+    config: &ReaderConfig<'_>,
+    erasures: &[Vec<usize>],
+) -> Result<Decoded, SpecError> {
     let layout =
         Layout::new(word.width(), word.height()).map_err(|_| SpecError::FormatUnreadable)?;
     let stream = layout.read_stream(grid).map_err(|_| SpecError::FormatUnreadable)?;
     let split = nmtcode_ecc::split(layout.codeword_count(), word.level()).map_err(ecc_error)?;
-    let corrected = nmtcode_ecc::decode_stream(&split, &stream, &[]).map_err(ecc_error)?;
+    let corrected = correct_blocks(&split, &stream, erasures)?;
     let parsed = parse_message(&corrected.message, word, config)?;
     let fields = parsed.header.fields;
     let content = nmtcode_payload::decode(
@@ -323,4 +386,99 @@ pub fn decode(grid: &ModuleGrid, options: &DecodeOptions) -> Result<Decoded, Dec
     let dictionaries = carried_dictionaries();
     let config = reader_config(options.limit, &dictionaries);
     decode_with(grid, &format.word, &config).map_err(DecodeError::from)
+}
+
+/// Decodes the symbol in `grid` as [`decode`] does, with `uncertain`: the modules whose value
+/// the reader could not tell with confidence, as (x, y), most doubtful first, for example
+/// `nmtcode_detect::Found::uncertain`.
+///
+/// 1. Format word (chapter 2, 2.7 step 1): the first 4 uncertain modules of each copy are
+///    erased bits of that copy.
+/// 2. Base layer (chapter 5, 5.9; chapter 4, 4.9): a data module at placement index k marks
+///    codeword floor(k / 8) as an erasure. Each Reed-Solomon block is corrected with its marks,
+///    at most its parity count, the most doubtful first; when that fails, with the first half
+///    of them; then without. Every result is bounded-distance (2e + s ≤ P).
+/// 3. When this reading fails a check, the grid is decoded again without any erasure, exactly
+///    as [`decode`], and that result is returned. A reading with erasures in which both format
+///    copies decode, to different words, rejects the symbol with `E_FORMAT_CONFLICT`, and one
+///    whose chosen word has format version 1 to 3 rejects it with `E_FORMAT_VERSION`, whatever
+///    the plain reading gives.
+///
+/// At most two messages reach the CRC-32C check, far below the 256 of chapter 4 (4.9). Nothing
+/// is returned from a reading that failed a check. With an empty `uncertain` this is
+/// [`decode`].
+///
+/// # Errors
+///
+/// As [`decode`].
+pub fn decode_with_erasures(
+    grid: &ModuleGrid,
+    uncertain: &[(u32, u32)],
+    options: &DecodeOptions,
+) -> Result<Decoded, DecodeError> {
+    if uncertain.is_empty() {
+        return decode(grid, options);
+    }
+    match erased_reading(grid, uncertain, options) {
+        Ok(decoded) => Ok(decoded),
+        Err(error @ (SpecError::FormatConflict | SpecError::FormatVersion)) => Err(error.into()),
+        Err(_) => decode(grid, options),
+    }
+}
+
+/// The reading of [`decode_with_erasures`] with the erasures, without the fallback.
+fn erased_reading(
+    grid: &ModuleGrid,
+    uncertain: &[(u32, u32)],
+    options: &DecodeOptions,
+) -> Result<Decoded, SpecError> {
+    let copies = read_format_copies(grid).map_err(|_| SpecError::FormatUnreadable)?;
+    let mut erased = [0u64; 2];
+    let mut counts = [0u32; 2];
+    for &(x, y) in uncertain {
+        for (copy, (mask, count)) in
+            FormatCopy::ALL.iter().zip(erased.iter_mut().zip(counts.iter_mut()))
+        {
+            if *count >= FORMAT_MAX_ERASURES {
+                continue;
+            }
+            let index = (0..FORMAT_BITS)
+                .find(|&i| format_module(*copy, i, grid.width(), grid.height()) == Some((x, y)));
+            if let Some(i) = index {
+                *mask |= 1u64 << (FORMAT_BITS - 1 - i);
+                *count += 1;
+            }
+        }
+    }
+    let samples = [0, 1].map(|c| {
+        Some(FormatSample::with_erasures(
+            copies.get(c).copied().unwrap_or(0),
+            erased.get(c).copied().unwrap_or(0),
+        ))
+    });
+    let format = decode_format_with(samples, |word| plausible(word, grid))?;
+    if u64::from(format.word.width()) * u64::from(format.word.height()) > options.max_area {
+        return Err(SpecError::SizeLimit);
+    }
+    let layout = Layout::new(format.word.width(), format.word.height())
+        .map_err(|_| SpecError::FormatUnreadable)?;
+    let split =
+        nmtcode_ecc::split(layout.codeword_count(), format.word.level()).map_err(ecc_error)?;
+    let mut per_block: Vec<Vec<usize>> = vec![Vec::new(); split.block_count()];
+    let codeword_modules = 8 * layout.codeword_count();
+    for &(x, y) in uncertain {
+        let Some(k) = layout.placement_index(x, y) else { continue };
+        if k >= codeword_modules {
+            continue;
+        }
+        let Some((block, byte)) = split.locate(k / 8) else { continue };
+        if let Some(list) = per_block.get_mut(block)
+            && !list.contains(&byte)
+        {
+            list.push(byte);
+        }
+    }
+    let dictionaries = carried_dictionaries();
+    let config = reader_config(options.limit, &dictionaries);
+    decode_layer(grid, &format.word, &config, &per_block)
 }

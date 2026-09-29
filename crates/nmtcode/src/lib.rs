@@ -36,7 +36,9 @@ mod decode;
 mod encode;
 mod size;
 
-pub use decode::{DecodeError, DecodeOptions, Decoded, DecodedRecord, MAX_AREA, decode};
+pub use decode::{
+    DecodeError, DecodeOptions, Decoded, DecodedRecord, MAX_AREA, decode, decode_with_erasures,
+};
 pub use encode::{
     EncodeError, EncodeOptions, Profile, Symbol, encode, encode_file, encode_text, encode_url,
 };

@@ -1,0 +1,30 @@
+[package]
+name = "nmtcode-wasm"
+description = "WebAssembly bindings of NMT Code for the browser page: make a symbol, and read symbols from camera frames or image files."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+# Built into the web page by scripts/build-web.sh; not a library for crates.io.
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+nmtcode = { workspace = true }
+nmtcode-core = { workspace = true }
+nmtcode-render = { workspace = true }
+nmtcode-detect = { workspace = true }
+wasm-bindgen = "=0.2.129"
+
+[dev-dependencies]
+png = { workspace = true }
+nmtcode-sim = { path = "../nmtcode-sim" }
+
+[lints]
+workspace = true

@@ -2,9 +2,11 @@
 
 use std::io::Cursor;
 
+use crate::luma::{luma, over_white};
 use crate::{DetectError, LumaImage, MAX_PIXELS};
 
-const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
+/// The eight bytes every PNG file starts with.
+pub(crate) const PNG_SIGNATURE: [u8; 8] = [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A];
 
 fn decoding_error(error: png::DecodingError) -> DetectError {
     match error {
@@ -13,19 +15,6 @@ fn decoding_error(error: png::DecodingError) -> DetectError {
         }
         other => DetectError::Malformed(other.to_string()),
     }
-}
-
-/// BT.601 luminance of an 8-bit RGB triple, rounded.
-fn luma(r: u8, g: u8, b: u8) -> u8 {
-    let y = (299 * u32::from(r) + 587 * u32::from(g) + 114 * u32::from(b) + 500) / 1000;
-    u8::try_from(y).unwrap_or(u8::MAX)
-}
-
-/// `value` with opacity `alpha`, composited over white.
-fn over_white(value: u8, alpha: u8) -> u8 {
-    let a = u32::from(alpha);
-    let v = (u32::from(value) * a + 255 * (255 - a) + 127) / 255;
-    u8::try_from(v).unwrap_or(u8::MAX)
 }
 
 /// Decodes a PNG of any colour type and bit depth into an 8-bit luminance image: 16-bit samples

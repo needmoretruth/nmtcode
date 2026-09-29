@@ -1,6 +1,6 @@
 [package]
 name = "nmtcode-detect"
-description = "Finds an NMT Code symbol in a rendered image and samples its module grid."
+description = "Finds NMT Code symbols in images, from renders to camera photos, and samples their module grids."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -10,10 +10,19 @@ homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = ["jpeg"]
+# JPEG input for `read_image` and `decode_jpeg`.
+jpeg = ["dep:zune-jpeg", "dep:zune-core"]
+
 [dependencies]
 nmtcode-core = { workspace = true }
 nmtcode-symbol = { workspace = true }
 png = { workspace = true }
+# JPEG decoding. MIT OR Apache-2.0 OR Zlib.
+zune-jpeg = { version = "=0.5.15", optional = true }
+# The byte cursor and options of zune-jpeg. MIT OR Apache-2.0 OR Zlib.
+zune-core = { version = "=0.5.1", optional = true }
 
 [dev-dependencies]
 nmtcode-render = { workspace = true }

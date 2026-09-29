@@ -1,0 +1,33 @@
+# cargo-about 0.9 configuration: THIRD-PARTY-LICENSES.html for the release archives.
+#
+#   cargo about generate --locked -m crates/nmtcode-cli/Cargo.toml --target <target> about.hbs
+#   cargo about generate --locked -m crates/nmtcode-wasm/Cargo.toml --target wasm32-unknown-unknown about.hbs
+#
+# scripts/package.sh runs these. The licence policy itself is enforced by cargo-deny (deny.toml);
+# this list mirrors it, so a crate that cargo-deny would reject also stops the notices.
+
+# Priority order: for a crate that offers a choice, the first licence of this list that satisfies it
+# is the one whose text is shipped.
+# BSD-3-Clause comes first so that brotli-decompressor ("BSD-3-Clause/MIT") ships the BSD-3-Clause
+# notice of its LICENSE file, which binary distributions must reproduce. brotli ("BSD-3-Clause AND
+# MIT") and alloc-no-stdlib ("BSD-3-Clause") ship it in any case.
+accepted = [
+    "BSD-3-Clause",
+    "MIT",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "ISC",
+    "Unlicense",
+    "CC0-1.0",
+]
+
+# Only what is compiled into the shipped binary or wasm module.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+ignore-transitive-dependencies = false
+
+# Crate configuration must come last.
+
+# Unicode-3.0 (asks only for its notice), for this crate only, as in deny.toml.
+[unicode-ident]
+accepted = ["Unicode-3.0"]

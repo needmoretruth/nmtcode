@@ -1,0 +1,593 @@
+/* NMT Code page. Design values are fixed by the maintainer: colours, sizes and spacing below
+   are not to be changed by implementers. Every size is in rem, except the 1px lines and the
+   2px focus ring. */
+
+:root {
+  color-scheme: light dark;
+  --bg: #EEF0F3;
+  --surface: #F7F8FA;
+  --raised: #E6E8EC;
+  --text: #1A1D22;
+  --muted: #4A5059;
+  --line: #D6DAE0;
+  --line-strong: #C3C8D0;
+  --error: #C0323A;
+  --success: #1E7F4B;
+  --focus: #4DA2FF;
+  /* A code is always dark modules on a light quiet zone: the preview sits on the light
+     surface in both colour schemes. */
+  --code-surface: #F7F8FA;
+  --radius: 0.75rem;
+  --font: system-ui, -apple-system, 'Segoe UI', Roboto, 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0E1014;
+    --surface: #15181E;
+    --raised: #1B1F26;
+    --text: #E6E8EC;
+    --muted: #B3B9C4;
+    --line: #262B33;
+    --line-strong: #3B424E;
+    --error: #EF9A9E;
+    --success: #7FD4A6;
+  }
+}
+
+html {
+  /* 16px up to a 1280px window, then linearly to 28px at 2880px, fixed above. */
+  font-size: clamp(16px, calc(16px + (100vw - 1280px) * 0.0075), 28px);
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font);
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1.55;
+  /* Korean wraps at word boundaries; a word longer than the line still breaks. */
+  word-break: keep-all;
+  overflow-wrap: break-word;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--text);
+  text-underline-offset: 0.2em;
+}
+
+h1 {
+  font-size: 1.5rem;
+  font-weight: 600;
+  line-height: 1.25;
+  margin: 2rem 0 1rem;
+}
+
+h2 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0 0 1rem;
+}
+
+h3 {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted);
+  margin: 0 0 0.5rem;
+}
+
+p {
+  margin: 0;
+}
+
+/* Layout */
+
+.column {
+  width: min(45rem, 100% - 2rem);
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.topbar {
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+
+/* 3.5rem high on phones and 4rem from 640px while the name and the language button fit on one
+   line; with very large text they wrap and the bar grows. */
+.topbar-inner {
+  width: min(45rem, 100% - 2rem);
+  /* The 1px line below is part of the height. */
+  min-height: calc(3.5rem - 1px);
+  padding: calc((3.5rem - 1px - 2.75rem) / 2) 0;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+}
+
+.brand {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: 0.5rem;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.brand-name {
+  font-size: 1.375rem;
+  font-weight: 600;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.brand-version {
+  font-size: 0.875rem;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.view {
+  margin-bottom: 3rem;
+}
+
+/* Controls */
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+  font-size: 1rem;
+  color: inherit;
+}
+
+.button,
+.language,
+.views [role='tab'] {
+  min-height: 2.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  padding: 0 1.5rem;
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.25;
+  cursor: pointer;
+  /* The text colour moves with the background, so a state change never shows light text on
+     a light background halfway. */
+  transition: border-color 150ms, background-color 150ms, color 150ms;
+}
+
+.button.primary {
+  min-height: 3.25rem;
+  background: var(--text);
+  color: var(--bg);
+  border-color: var(--text);
+}
+
+.button.primary:hover:not(:disabled) {
+  border-color: var(--line-strong);
+}
+
+.button.secondary {
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line-strong);
+}
+
+.button.secondary:hover:not(:disabled) {
+  background: var(--raised);
+}
+
+.button:disabled {
+  background: var(--raised);
+  color: var(--muted);
+  border-color: var(--line);
+  cursor: not-allowed;
+}
+
+.language {
+  flex: none;
+  padding: 0 0.75rem;
+  background: transparent;
+  color: var(--text);
+  border-color: var(--line-strong);
+  white-space: nowrap;
+}
+
+.language:hover {
+  background: var(--raised);
+}
+
+.views {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-top: 1.5rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+}
+
+.views [role='tab'] {
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+}
+
+.views [role='tab'][aria-selected='true'] {
+  background: var(--text);
+  color: var(--bg);
+}
+
+.views [role='tab'][aria-selected='false']:hover {
+  background: var(--raised);
+}
+
+.actions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.actions .button {
+  width: 100%;
+}
+
+.label {
+  display: block;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin: 0 0 0.5rem;
+}
+
+fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+legend {
+  padding: 0;
+}
+
+.make {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.field {
+  min-width: 0;
+}
+
+.row {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1.5rem;
+}
+
+.choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.75rem;
+  cursor: pointer;
+}
+
+.choice input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin: 0;
+  accent-color: var(--text);
+  flex: none;
+}
+
+textarea,
+input[type='url'],
+input[type='number'],
+select {
+  display: block;
+  width: 100%;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  line-height: 1.55;
+}
+
+textarea {
+  resize: vertical;
+}
+
+.slider {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.slider input[type='range'] {
+  flex: 1;
+  min-width: 0;
+  min-height: 2.75rem;
+  margin: 0;
+  accent-color: var(--text);
+}
+
+.slider input[type='number'] {
+  width: 5rem;
+  flex: none;
+}
+
+.hint {
+  font-size: 0.875rem;
+  color: var(--muted);
+  margin-top: 0.5rem;
+}
+
+.warning,
+.error {
+  color: var(--error);
+}
+
+.hint.warning {
+  color: var(--error);
+}
+
+/* Reading */
+
+.camera {
+  margin-top: 1.5rem;
+}
+
+.camera video {
+  display: block;
+  width: 100%;
+  max-height: 60vh;
+  object-fit: contain;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.status {
+  margin-top: 1rem;
+  color: var(--muted);
+}
+
+.status:empty {
+  display: none;
+}
+
+.status.error {
+  color: var(--error);
+}
+
+.results {
+  margin-top: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.results:empty {
+  display: none;
+}
+
+.box {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 1rem;
+  min-width: 0;
+}
+
+.record + .record {
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--line);
+}
+
+.record {
+  display: grid;
+  gap: 0.75rem;
+  min-width: 0;
+}
+
+.record > h3 {
+  margin: 0;
+}
+
+.value {
+  margin: 0;
+  font-family: inherit;
+  font-size: 1rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.hex {
+  font-variant-numeric: tabular-nums;
+}
+
+.facts {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: baseline;
+  gap: 0 1rem;
+  margin: 0;
+}
+
+.facts dd + dt {
+  margin-top: 0.5rem;
+}
+
+.facts dt {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--muted);
+  line-height: 1.55;
+}
+
+.facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.meta,
+.notice {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.error-name {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.confirm {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  padding: 1rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.result-meta {
+  margin-top: 1.5rem;
+}
+
+/* Making */
+
+.output {
+  margin-top: 1.5rem;
+  display: grid;
+  gap: 1rem;
+}
+
+.output .hint {
+  margin-top: 0;
+}
+
+.preview {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1rem;
+  background: var(--code-surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: auto;
+}
+
+.preview canvas {
+  display: block;
+  flex: none;
+  image-rendering: crisp-edges;
+  image-rendering: pixelated;
+}
+
+.info {
+  font-size: 0.875rem;
+  color: var(--muted);
+}
+
+.info:empty {
+  display: none;
+}
+
+/* Footer */
+
+.footer {
+  padding: 1.5rem 0 3rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.875rem;
+  color: var(--muted);
+  display: grid;
+  gap: 0.5rem;
+}
+
+@media (min-width: 640px) {
+  .column,
+  .topbar-inner {
+    width: min(45rem, 100% - 3rem);
+  }
+
+  .topbar-inner {
+    /* The 1px line below is part of the height. */
+    min-height: calc(4rem - 1px);
+    padding: calc((4rem - 1px - 2.75rem) / 2) 0;
+  }
+
+  h1 {
+    font-size: 1.75rem;
+  }
+
+  .views {
+    max-width: 24rem;
+  }
+
+  .actions {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .actions .button {
+    width: auto;
+  }
+
+  .row {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .box {
+    padding: 1.5rem;
+  }
+
+  .facts {
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.5rem 1rem;
+  }
+
+  .facts dd + dt {
+    margin-top: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}

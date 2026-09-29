@@ -68,9 +68,17 @@ pub fn mark_lines(z: u32) -> Vec<u32> {
     (0..=n).map(|i| 2 + (2 * i * s + n) / (2 * n)).collect()
 }
 
-/// A `w` × `h` symbol: random data modules from `seed`, then the finders (5.3), separators
-/// (5.4) and reference marks (5.6). The format areas hold random bits like data.
+/// A `w` × `h` symbol as the generator draws it: random codewords from `seed` on the data
+/// modules, the finders (5.3), separators (5.4), reference marks (5.6) and both format copies of
+/// a level-0 static format word. The detector confirms the format word, so the copies are real.
 pub fn make_symbol(w: u32, h: u32, seed: u64) -> ModuleGrid {
+    drawn_symbol(w, h, seed)
+}
+
+/// A `w` × `h` symbol with random data modules from `seed`, then the finders (5.3), separators
+/// (5.4) and reference marks (5.6). The format areas hold random bits like data, so the format
+/// word does not decode.
+pub fn make_symbol_without_format(w: u32, h: u32, seed: u64) -> ModuleGrid {
     let mut grid = ModuleGrid::new(w, h).unwrap();
     let mut rng = Rng(seed);
     for y in 0..h {

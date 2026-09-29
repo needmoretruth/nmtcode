@@ -1,0 +1,42 @@
+# Files this repository may track. scripts/check-public-files.sh fails on any tracked or staged file
+# that no line admits.
+#
+# One glob per line, relative to the repository root; `#` starts a comment.
+#   **   any characters, including /
+#   *    any characters except /
+#   ?    one character except /
+# A line starting with ! takes files back out. The last line that matches a file decides.
+#
+# Some files are refused whatever this list says: CLAUDE.md, AGENTS.md, GEMINI.md, anything under
+# notes/, .claude*/ or .playwright-mcp/, and key or credential files (see check-public-files.sh).
+
+# Source, web page, specification, documentation, scripts, GitHub settings
+crates/**
+web/**
+!web/pkg/**
+spec/**
+docs/**
+scripts/**
+.github/**
+
+# Workspace and tool configuration
+Cargo.toml
+Cargo.lock
+rust-toolchain.toml
+rustfmt.toml
+deny.toml
+about.toml
+about.hbs
+.gitignore
+
+# Licences, contributing and project documents
+LICENSE-MIT
+LICENSE-APACHE
+README.md
+README.ko.md
+CHANGELOG.md
+CHANGELOG.ko.md
+CLA.md
+CLA.ko.md
+CONTRIBUTORS.md
+SECURITY.md

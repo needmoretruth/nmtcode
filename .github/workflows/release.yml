@@ -1,0 +1,213 @@
+name: Release
+
+# A tag vX.Y.Z builds the nmtcode command for five targets and the web page, and puts them with
+# SHA256SUMS into a draft GitHub release. The maintainer checks the draft and publishes it.
+
+on:
+  push:
+    tags: ['v*.*.*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_ABOUT_VERSION: 0.9.2
+
+jobs:
+  version:
+    name: Tag matches the workspace version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Compare the tag with [workspace.package] version
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(bash scripts/package.sh version)"
+          printf 'tag %s, workspace version %s\n' "$TAG" "$version"
+          if [[ "$TAG" != "v$version" ]]; then
+            printf '::error::tag %s does not match the workspace version %s\n' "$TAG" "$version"
+            exit 1
+          fi
+          notes=".github/release-notes/v$version.md"
+          if [[ ! -s "$notes" ]]; then
+            printf '::error::%s is missing or empty\n' "$notes"
+            exit 1
+          fi
+          printf 'version=%s\n' "$version" >>"$GITHUB_OUTPUT"
+
+  cli:
+    name: nmtcode for ${{ matrix.target }}
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    strategy:
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+            musl: true
+            runs: true
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+            musl: true
+            runs: true
+          - target: x86_64-apple-darwin
+            runner: macos-15
+            runs: false
+          - target: aarch64-apple-darwin
+            runner: macos-15
+            runs: true
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+            runs: true
+            # The C runtime linked in, so the program runs without the Visual C++ redistributable.
+            rustflags: -C target-feature=+crt-static
+    env:
+      TARGET: ${{ matrix.target }}
+      VERSION: ${{ needs.version.outputs.version }}
+      RUSTFLAGS: ${{ matrix.rustflags }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install musl-tools
+        if: matrix.musl
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Install the toolchain of rust-toolchain.toml with the target
+        run: |
+          channel="$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --target "$TARGET"
+          rustc --version
+
+      - name: Install cargo-about ${{ env.CARGO_ABOUT_VERSION }}
+        run: cargo install --locked cargo-about --version "$CARGO_ABOUT_VERSION"
+
+      - name: Build and pack
+        run: bash scripts/package.sh "$TARGET"
+
+      - name: The musl build is static
+        if: matrix.musl
+        run: |
+          description="$(file --brief "target/$TARGET/release/nmtcode")"
+          printf '%s\n' "$description"
+          grep -q -E 'statically linked|static-pie linked' <<<"$description"
+
+      - name: The program reports the version
+        if: matrix.runs
+        run: |
+          case "$TARGET" in *-windows-*) exe=nmtcode.exe ;; *) exe=nmtcode ;; esac
+          reported="$("target/$TARGET/release/$exe" --version)"
+          printf '%s\n' "$reported"
+          [[ "$reported" == "nmtcode $VERSION" ]]
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/nmtcode-*
+          if-no-files-found: error
+
+  web:
+    name: Web page
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the toolchain of rust-toolchain.toml with the wasm32 target
+        run: |
+          channel="$(sed -n 's/^channel *= *"\(.*\)"$/\1/p' rust-toolchain.toml)"
+          test -n "$channel"
+          rustup toolchain install "$channel" --profile minimal --target wasm32-unknown-unknown
+          rustc --version
+
+      - name: Install wasm-bindgen-cli of the version in Cargo.lock
+        run: |
+          bindgen="$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/^version = "|"$/, ""); print; exit }' Cargo.lock)"
+          test -n "$bindgen"
+          cargo install --locked wasm-bindgen-cli --version "$bindgen"
+
+      - name: Install cargo-about ${{ env.CARGO_ABOUT_VERSION }}
+        run: cargo install --locked cargo-about --version "$CARGO_ABOUT_VERSION"
+
+      - name: scripts/build-web.sh
+        # One job per runner: the machine-wide lock of the scripts is not needed here.
+        env:
+          NMTCODE_CHECK_HOLDS_LOCK: '1'
+        run: bash scripts/build-web.sh
+
+      - name: Pack
+        run: bash scripts/package.sh web
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: web
+          path: dist/nmtcode-web-*
+          if-no-files-found: error
+
+  release:
+    name: Draft release
+    needs: [version, cli, web]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.ref_name }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Write SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum -- nmtcode-* >SHA256SUMS
+          cat SHA256SUMS
+          count="$(wc -l <SHA256SUMS)"
+          if [[ "$count" -ne 6 ]]; then
+            printf '::error::expected 6 archives, found %s\n' "$count"
+            exit 1
+          fi
+
+      - name: Create the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release create "$TAG" --draft --verify-tag \
+            --title "NMT Code $VERSION" \
+            --notes-file ".github/release-notes/v$VERSION.md" \
+            dist/nmtcode-* dist/SHA256SUMS

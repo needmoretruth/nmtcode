@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; img-src 'self' blob: data:; media-src 'self' blob:; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'">
+    <meta name="referrer" content="no-referrer">
+    <meta name="color-scheme" content="light dark">
+    <title>NMT Code</title>
+    <link rel="stylesheet" href="style.css">
+    <script type="module" src="app.js"></script>
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="topbar-inner">
+        <p class="brand">
+          <span class="brand-name" data-i18n="app_name">NMT Code</span>
+          <span class="brand-version" id="top-version"></span>
+        </p>
+        <button type="button" class="language" id="language-button"></button>
+      </div>
+    </header>
+
+    <main class="column">
+      <div class="views" role="tablist" data-i18n-aria-label="views">
+        <button type="button" role="tab" id="tab-read" aria-controls="view-read" aria-selected="true" data-i18n="tab_read">Read</button>
+        <button type="button" role="tab" id="tab-make" aria-controls="view-make" aria-selected="false" tabindex="-1" data-i18n="tab_make">Make</button>
+      </div>
+
+      <section id="view-read" class="view" role="tabpanel" aria-labelledby="tab-read">
+        <h1 data-i18n="read_heading">Read a code</h1>
+        <div class="actions">
+          <button type="button" class="button primary" id="camera-button">Start camera</button>
+          <button type="button" class="button secondary" id="image-button" data-i18n="read_file_choose">Choose an image</button>
+          <input type="file" id="image-input" accept="image/*" capture="environment" hidden>
+        </div>
+        <div class="camera" id="camera" hidden>
+          <video id="video" playsinline muted data-i18n-aria-label="read_video_label"></video>
+        </div>
+        <p class="status" id="read-status" role="status"></p>
+        <div class="results" id="results" aria-live="polite" data-i18n-aria-label="results_heading"></div>
+      </section>
+
+      <section id="view-make" class="view" role="tabpanel" aria-labelledby="tab-make" hidden>
+        <h1 data-i18n="make_heading">Make a code</h1>
+        <form id="make-form" class="make" novalidate>
+          <fieldset class="field">
+            <legend class="label" data-i18n="make_kind">Content</legend>
+            <div class="choices">
+              <label class="choice"><input type="radio" name="kind" value="text" checked> <span data-i18n="kind_text">Text</span></label>
+              <label class="choice"><input type="radio" name="kind" value="url"> <span data-i18n="kind_url">Link</span></label>
+              <label class="choice"><input type="radio" name="kind" value="file"> <span data-i18n="kind_file">File</span></label>
+            </div>
+          </fieldset>
+
+          <div class="field" id="text-field">
+            <label class="label" for="text-input" data-i18n="make_text_label">Text</label>
+            <textarea id="text-input" rows="4" spellcheck="false"></textarea>
+          </div>
+
+          <div class="field" id="url-field" hidden>
+            <label class="label" for="url-input" data-i18n="make_url_label">Web address</label>
+            <input type="url" id="url-input" inputmode="url" autocomplete="url" spellcheck="false" data-i18n-placeholder="make_url_placeholder">
+            <p class="hint warning" id="url-hint" data-i18n="make_url_invalid" hidden></p>
+          </div>
+
+          <div class="field" id="file-field" hidden>
+            <span class="label" id="file-label" data-i18n="make_file_label">File</span>
+            <div class="actions">
+              <button type="button" class="button secondary" id="file-button" aria-describedby="file-chosen" data-i18n="make_file_choose">Choose a file</button>
+            </div>
+            <input type="file" id="file-input" hidden>
+            <p class="hint" id="file-chosen"></p>
+          </div>
+
+          <div class="row">
+            <div class="field">
+              <label class="label" for="level" data-i18n="make_level">Error correction</label>
+              <select id="level">
+                <option value="0" data-i18n="level_0" selected>0</option>
+                <option value="1" data-i18n="level_1">1</option>
+                <option value="2" data-i18n="level_2">2</option>
+                <option value="3" data-i18n="level_3">3</option>
+              </select>
+            </div>
+            <div class="field">
+              <span class="label" id="module-label" data-i18n="make_module_size">Module size in pixels</span>
+              <div class="slider">
+                <input type="range" id="module-range" min="2" max="16" step="1" value="4" aria-labelledby="module-label">
+                <input type="number" id="module-number" min="2" max="16" step="1" value="4" inputmode="numeric" aria-labelledby="module-label">
+              </div>
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="choice"><input type="checkbox" id="qr" aria-describedby="qr-hint"> <span data-i18n="make_qr">Add a QR Code that links to NMT Code</span></label>
+            <p class="hint" id="qr-hint" data-i18n="make_qr_hint"></p>
+          </div>
+        </form>
+
+        <div class="output">
+          <p class="hint" id="make-empty"></p>
+          <div class="preview" id="preview-box" hidden>
+            <canvas id="preview" role="img" data-i18n-aria-label="make_preview_label"></canvas>
+          </div>
+          <p class="info" id="make-info" aria-live="polite"></p>
+          <p class="error" id="make-error" role="alert" hidden></p>
+          <div class="actions">
+            <button type="button" class="button primary" id="download-png" data-i18n="download_png" disabled>Download PNG</button>
+            <button type="button" class="button secondary" id="download-svg" data-i18n="download_svg" disabled>Download SVG</button>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="column footer">
+      <p>
+        <span id="footer-version"></span>
+        · <a href="https://github.com/needmoretruth/nmtcode" rel="noopener noreferrer" data-i18n="footer_source">Source code on GitHub</a>
+        · <a href="THIRD-PARTY-LICENSES.html" data-i18n="footer_licenses">Third-party licenses</a>
+      </p>
+      <p data-i18n="footer_trademark">QR Code is a registered trademark of DENSO WAVE INCORPORATED.</p>
+    </footer>
+  </body>
+</html>
