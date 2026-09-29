@@ -70,7 +70,7 @@ step "cargo-about is version $about_version"
 found_about="$(cargo about --version 2>/dev/null || true)"
 if [[ "$found_about" != "cargo-about $about_version" ]]; then
   printf 'package: need cargo-about %s, found "%s"\n' "$about_version" "$found_about" >&2
-  printf 'package: cargo install --locked cargo-about --version %s\n' "$about_version" >&2
+  printf 'package: cargo install --locked --features cli cargo-about --version %s\n' "$about_version" >&2
   exit 1
 fi
 

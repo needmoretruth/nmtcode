@@ -102,7 +102,10 @@ jobs:
           rustc --version
 
       - name: Install cargo-about ${{ env.CARGO_ABOUT_VERSION }}
-        run: cargo install --locked cargo-about --version "$CARGO_ABOUT_VERSION"
+        run: |
+          # cargo-about ships its command behind the "cli" feature.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
 
       - name: Build and pack
         run: bash scripts/package.sh "$TARGET"
@@ -154,7 +157,10 @@ jobs:
           cargo install --locked wasm-bindgen-cli --version "$bindgen"
 
       - name: Install cargo-about ${{ env.CARGO_ABOUT_VERSION }}
-        run: cargo install --locked cargo-about --version "$CARGO_ABOUT_VERSION"
+        run: |
+          # cargo-about ships its command behind the "cli" feature.
+          cargo install --locked --features cli cargo-about --version "$CARGO_ABOUT_VERSION"
+          cargo about --version
 
       - name: scripts/build-web.sh
         # One job per runner: the machine-wide lock of the scripts is not needed here.
